@@ -243,6 +243,18 @@ const routes = [
   }],
   ['POST', '/api/batches/:id/enumerate', ({ id }) => (capture.startEnumerate(mustBatch(id).id), { ok: true })],
   ['POST', '/api/batches/:id/enumerate/stop', ({ id }) => (capture.stopEnumerate(mustBatch(id).id), { ok: true })],
+  // 补充截图：给了链接就从那一条开始，否则接着上次的位置；more=0 取到最后。已截过的对话自动跳过
+  ['POST', '/api/batches/:id/extend', ({ id, body }) => {
+    const b = mustBatch(id);
+    let chatId = null;
+    if (String(body.link || '').trim()) {
+      const l = parseSource(body);
+      if (l.evaluationId !== b.source.evaluationId) throw new Error(`这条链接属于 evaluation ${l.evaluationId}，和本批次（${b.source.evaluationId}）不是同一个评估，请新建批次`);
+      chatId = l.chatId;
+    }
+    capture.extend(b.id, { chatId, more: Math.max(0, Math.round(Number(body.more) || 0)) });
+    return brief(b);
+  }],
   ['PATCH', '/api/batches/:id/items/:itemId', ({ id, itemId, body }) => {
     const b = mustBatch(id);
     const it = b.items.find((x) => x.id === Number(itemId));

@@ -399,7 +399,10 @@ function filterDefs() {
 const visibleItems = () => {
   const pred = (filterDefs()[S.filter] || FILTERS.all)[1];
   const q = S.search.toLowerCase();
-  return S.cur.items.filter((i) => pred(i) && (!q || i.query.toLowerCase().includes(q) || String(i.chatId).includes(q)));
+  // 按在评估里的位置排序：后补的前面的对话也能排回原位
+  return S.cur.items
+    .filter((i) => pred(i) && (!q || i.query.toLowerCase().includes(q) || String(i.chatId).includes(q)))
+    .sort((a, b) => (a.pos ?? 0) - (b.pos ?? 0) || a.turn - b.turn);
 };
 const selIds = () => [...S.sel].filter((id) => S.cur.items.some((i) => i.id === id));
 const bid = () => encodeURIComponent(S.cur.id);
@@ -415,6 +418,17 @@ function renderBatch(rebuild) {
         <div id="bEnum" class="hint" style="margin-top:6px"></div>
         <div id="bStats" class="stats hint" style="margin-top:4px"></div>
         <div class="toolbar" id="bTools" style="margin-top:10px"></div>
+        <details id="bExt" style="margin-top:10px"><summary>补充截图（接着往后取，或从另一条开始补）</summary>
+          <div class="row" style="margin-top:8px">
+            <input id="xLink" type="text" style="flex:1;min-width:320px" placeholder="从哪一条开始（粘贴同一评估的链接）；留空 = 接着上次的位置往后" />
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label><input type="radio" name="xScope" value="n" checked /> 往后 <input id="xN" type="number" min="1" value="50" style="width:80px" /> 条</label>
+            <label><input type="radio" name="xScope" value="0" /> 一直到最后</label>
+            <button type="button" id="xGo" class="pri">开始补充</button>
+            <span class="hint">已截过的对话会自动跳过，不重复截、不占名额；新条目沿用本批次的环境和裁剪设置。</span>
+          </div>
+        </details>
       </div>
       <div class="tabs" role="tablist">
         <button type="button" role="tab" data-tab="items">条目</button>
@@ -432,6 +446,15 @@ function renderBatch(rebuild) {
         <div class="grid" id="grid"></div>
       </div>
       <div id="tabSummary" class="card" hidden></div>`;
+    $('xLink').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') $('xGo').click();
+    });
+    $('xGo').onclick = () => act(async () => {
+      const more = document.querySelector('input[name=xScope]:checked').value === 'n' ? Number($('xN').value) || 1 : 0;
+      const r = await api('POST', `/api/batches/${bid()}/extend`, { link: $('xLink').value, more });
+      $('xLink').value = '';
+      return r;
+    }, '开始补充，新拉到的对话会自动截图');
     $('bRename').onclick = () => {
       const name = prompt('批次名称', S.cur.name);
       if (name?.trim()) act(() => api('PATCH', `/api/batches/${bid()}`, { name }), '已重命名');
@@ -469,13 +492,14 @@ function renderBatch(rebuild) {
 // 拉取进度：顺着 next_chat_id 往后取，暂停后可继续
 function renderEnum() {
   const e = S.cur.enum;
-  const lim = S.cur.source.limit;
-  const target = lim || (e.total ? `剩余全部（共 ${e.total}）` : '剩余全部');
+  const plan = e.status === 'running' ? (e.remaining == null ? '，取到最后为止' : `，本次还要取 ${e.remaining} 条`) : '';
   const btn = e.status === 'running' ? '<button type="button" class="sm" id="enStop">停止拉取</button>'
-    : e.next && (!lim || e.count < lim) ? '<button type="button" class="sm" id="enGo">继续拉取</button>' : '';
-  $('bEnum').innerHTML = `${ENUM[e.status] || e.status}：已取 ${e.count} / ${target} 段对话 ${btn}${e.error ? ` <span class="${e.status === 'failed' ? 'err' : 'warn'}">${esc(e.error)}</span>` : ''}`;
+    : e.status === 'paused' && e.next ? '<button type="button" class="sm" id="enGo">继续拉取</button>' : '';
+  const where = e.next ? '' : e.status === 'done' ? ' · 已到评估的最后一条' : '';
+  $('bEnum').innerHTML = `${ENUM[e.status] || e.status}：本批次已有 ${S.cur.counts.chats} 段对话${e.total ? `（评估共 ${e.total} 条）` : ''}${plan}${where} ${btn}${e.error ? ` <span class="${e.status === 'failed' ? 'err' : 'warn'}">${esc(e.error)}</span>` : ''}`;
   if ($('enStop')) $('enStop').onclick = () => act(() => api('POST', `/api/batches/${bid()}/enumerate/stop`), '已停止拉取，已取到的会继续截图');
   if ($('enGo')) $('enGo').onclick = () => act(() => api('POST', `/api/batches/${bid()}/enumerate`), '继续拉取');
+  $('xGo').disabled = e.status === 'running';
 }
 
 // 胜率条：模型与人工各一行

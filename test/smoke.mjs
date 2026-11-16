@@ -108,6 +108,22 @@ try {
   assert.equal(jsonl.length, 3);
   assert.ok(fs.existsSync(jsonl[1].envs[1].image));
   assert.equal(jsonl.find((x) => x.turn === 2).manual.pref, 'same');
+
+  // 补充截图：接着上次往后取 → 拿到第 3 段；再从第 1 条的链接开始补 → 已截过的全部跳过，不重复
+  await json('POST', `/api/batches/${batchId}/extend`, { more: 5 });
+  const ext = await until(async () => {
+    const x = await json('GET', `/api/batches/${batchId}`);
+    return x.enum.status === 'done' && x.items.length === 4 && x.items.every((i) => i.status === 'done') && x;
+  }, 60000, '补充截图完成');
+  assert.equal(ext.items.find((i) => i.id === second.id).manual.pref, 'same'); // 原有标注不受影响
+  await json('POST', `/api/batches/${batchId}/extend`, { link: lp.link, more: 0 });
+  const again = await until(async () => {
+    const x = await json('GET', `/api/batches/${batchId}`);
+    return x.enum.status === 'done' && x;
+  }, 20000, '从头补充');
+  assert.equal(again.items.length, 4);
+  const otherEval = lp.link.replace('/1258076/', '/999/');
+  assert.match((await (await call('POST', `/api/batches/${batchId}/extend`, { link: otherEval }, 400)).json()).error, /不是同一个评估/);
   console.log('冒烟通过：Cookie 校验、解析、拉取 2 段对话、截图 3 轮 × 2 环境 + 拼图、单条对比评估、人工偏好、Excel（截图按行归属）、JSONL');
 } finally {
   if (batchId) await call('DELETE', `/api/batches/${batchId}`).catch(() => {});
