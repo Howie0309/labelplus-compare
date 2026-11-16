@@ -89,7 +89,8 @@ try {
     (await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id).eval, 20000, '评估完成');
   assert.equal(ev.pref, 'B');
   assert.deepEqual(ev.scores, { A: 7, B: 9 });
-  await call('PATCH', `/api/batches/${batchId}/items/${second.id}`, { manual: { pref: 'same', note: 'smoke' } });
+  await call('PATCH', `/api/batches/${batchId}/items/${second.id}`, { manual: { gsb: 0.5, note: 'smoke' } });
+  await call('PATCH', `/api/batches/${batchId}/items/${b.items[0].id}`, { manual: { gsb: 0.3 } }); // 不在五档里的值视为清空
 
   // 单环境评估：只评 B（env 22），结果另存在 envEvals，不覆盖对比评估
   await json('POST', `/api/batches/${batchId}/eval`, { ids: [second.id], envId: 22 });
@@ -108,7 +109,7 @@ try {
   const ws = wb.worksheets[0];
   const header = ws.getRow(1).values.slice(1);
   assert.ok(header.includes('query') && header.includes('截图_线上') && header.includes('截图_策略-genui-联调') && header.includes('上文'));
-  assert.ok(header.includes('单评总分(/10)_策略-genui-联调'));
+  assert.ok(header.includes('单评总分(/10)_策略-genui-联调') && header.includes('人工打分(B相对A,-1~1)'));
   // 每张图按左上角锚点归属单元格（「自动评估」就是这样把图片归到行的）：第 2 轮那一行应正好有两个环境的截图
   const headerOf = (c) => ws.getRow(1).getCell(c).text;
   const rowOfQuery = (q) => { let n = 0; ws.eachRow((row, i) => { if (row.getCell(4).text === q) n = i; }); return n; };
@@ -120,7 +121,7 @@ try {
   const jsonl = (await (await call('GET', `/api/batches/${batchId}/export.jsonl`)).text()).trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(jsonl.length, 3);
   assert.ok(fs.existsSync(jsonl[1].envs[1].image));
-  assert.equal(jsonl.find((x) => x.turn === 2).manual.pref, 'same');
+  assert.deepEqual([jsonl.find((x) => x.turn === 2).manual.gsb, jsonl.find((x) => x.turn === 2).manual.pref, jsonl[0].manual.gsb], [0.5, 'B', null]);
 
   // 补充截图：接着上次往后取 → 拿到第 3 段；再从第 1 条的链接开始补 → 已截过的全部跳过，不重复
   await json('POST', `/api/batches/${batchId}/extend`, { more: 5 });
@@ -128,7 +129,7 @@ try {
     const x = await json('GET', `/api/batches/${batchId}`);
     return x.enum.status === 'done' && x.items.length === 4 && x.items.every((i) => i.status === 'done') && x;
   }, 60000, '补充截图完成');
-  assert.equal(ext.items.find((i) => i.id === second.id).manual.pref, 'same'); // 原有标注不受影响
+  assert.equal(ext.items.find((i) => i.id === second.id).manual.gsb, 0.5); // 原有标注不受影响
   await json('POST', `/api/batches/${batchId}/extend`, { link: lp.link, more: 0 });
   const again = await until(async () => {
     const x = await json('GET', `/api/batches/${batchId}`);

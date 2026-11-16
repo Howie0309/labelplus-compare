@@ -6,6 +6,11 @@ const EV = { queued: '评估排队', running: '评估中', done: '已评估', fa
 const RT = { good: '好', ok: '中', bad: '差' };
 const ENUM = { running: '拉取中', paused: '已暂停拉取', done: '已拉完', failed: '拉取失败' };
 const L = ['A', 'B', 'C', 'D'];
+// 人工 GSB 五档：B 相对 A 的分数
+const GSB = [-1, -0.5, 0, 0.5, 1];
+const fmtG = (g) => (g > 0 ? `+${g}` : String(g));
+const gsbShort = (g) => `${fmtG(g)} ${g === 0 ? '持平' : `${g < 0 ? 'A' : 'B'} ${Math.abs(g) === 1 ? '明显更好' : '略好'}`}`;
+const gsbTag = (g) => `<span class="pref ${g > 0 ? 'B' : g < 0 ? 'A' : 'same'}">${esc(gsbShort(g))}</span>`;
 
 const S = {
   batches: [],
@@ -391,9 +396,9 @@ function filterDefs() {
     for (const p of [...L.slice(0, S.cur.envs.length), 'same']) {
       const label = p === 'same' ? '持平' : `${p} 更好`;
       defs[`m:${p}`] = [`模型：${label}`, (i) => modelPref(i) === p];
-      defs[`h:${p}`] = [`人工：${label}`, (i) => i.manual?.pref === p];
     }
-    defs.conflict = ['人工与模型不一致', (i) => i.manual?.pref && modelPref(i) && i.manual.pref !== modelPref(i)];
+    for (const g of GSB) defs[`g:${g}`] = [`人工：${gsbShort(g)}`, (i) => i.manual?.gsb === g];
+    defs.conflict = ['人工与模型方向不一致', (i) => i.manual?.pref && modelPref(i) && i.manual.pref !== modelPref(i)];
   } else {
     for (const [k, t] of Object.entries(RT)) defs[`r:${k}`] = [`人工评${t}`, (i) => i.manual?.rating === k];
   }
@@ -525,7 +530,9 @@ function prefStats(b) {
     const s = b.items.map((i) => modelScore(i, k)).filter((x) => typeof x === 'number');
     return s.length ? `${L[k]} <b class="score">${(s.reduce((a, x) => a + x, 0) / s.length).toFixed(1)}</b>` : '';
   }).filter(Boolean).join(' / ');
-  return `${line('模型', modelPref)}${line('人工', (i) => i.manual?.pref)}${avg ? `<span>平均总分 ${avg}</span>` : ''}${singleAvg(b)}`;
+  const gs = b.items.map((i) => i.manual?.gsb).filter((g) => typeof g === 'number');
+  const gAvg = gs.length ? `<span title="B 相对 A，-1~1">人工均分 <b class="score">${fmtG(Math.round((gs.reduce((a, x) => a + x, 0) / gs.length) * 100) / 100)}</b>（${gs.length} 条）</span>` : '';
+  return `${line('模型', modelPref)}${line('人工', (i) => i.manual?.pref)}${gAvg}${avg ? `<span>平均总分 ${avg}</span>` : ''}${singleAvg(b)}`;
 }
 
 function singleAvg(b) {
@@ -647,7 +654,7 @@ function renderGrid() {
                 ${mp ? `<span class="tag">模型 ${prefLabel(mp)}</span>` : ''}
                 ${scores.length ? `<span class="score">${scores.join(' : ')}</span>` : ''}
                 ${envs.length > 1 ? envs.map((e, k) => { const s = it.envEvals?.[e.id]; return s?.status === 'done' && typeof s.score === 'number' ? `<span class="tag" title="单环境评估">单评 ${L[k]} <b class="score">${s.score}</b></span>` : s?.status === 'failed' ? `<span class="tag err">单评 ${L[k]} 失败</span>` : ['queued', 'running'].includes(s?.status) ? `<span class="tag">单评 ${L[k]}…</span>` : ''; }).join('') : ''}
-                ${it.manual?.pref ? `<span class="tag">人工 ${prefLabel(it.manual.pref)}</span>` : ''}
+                ${typeof it.manual?.gsb === 'number' ? `<span class="tag">人工 ${gsbTag(it.manual.gsb)}</span>` : it.manual?.pref ? `<span class="tag">人工 ${prefLabel(it.manual.pref)}</span>` : ''}
                 ${it.manual?.rating ? `<span class="tag">人工：${RT[it.manual.rating]}</span>` : ''}
               </div>
               ${it.error ? `<div class="hint ${it.status === 'failed' ? 'err' : 'warn'}" style="margin-top:4px">${esc(it.error)}</div>` : ''}
@@ -771,17 +778,16 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeViewer();
   else if (e.key === 'ArrowRight') stepViewer(1);
   else if (e.key === 'ArrowLeft') stepViewer(-1);
-  else if (['1', '2', '3'].includes(e.key)) {
-    if (multi()) setManual('pref', { 1: 'A', 2: 'same', 3: 'B' }[e.key]);
-    else setManual('rating', { 1: 'good', 2: 'ok', 3: 'bad' }[e.key]);
-  } else if (e.key === 'e' || e.key === 'E') $('vEval')?.click();
+  else if (multi() && ['1', '2', '3', '4', '5'].includes(e.key)) setManual('gsb', GSB[Number(e.key) - 1]);
+  else if (['1', '2', '3'].includes(e.key)) setManual('rating', { 1: 'good', 2: 'ok', 3: 'bad' }[e.key]);
+  else if (e.key === 'e' || e.key === 'E') $('vEval')?.click();
 });
 
 async function setManual(k, v) {
   const it = curItem();
   if (!it) return;
   const val = it.manual?.[k] === v ? null : v;
-  it.manual = { ...(it.manual || {}), [k]: val };
+  it.manual = { ...(it.manual || {}), [k]: val, ...(k === 'gsb' ? { pref: val == null ? null : val > 0 ? 'B' : val < 0 ? 'A' : 'same' } : {}) };
   renderViewer(false);
   await api('PATCH', `/api/batches/${bid()}/items/${it.id}`, { manual: { [k]: val } }).catch((e) => toast(e.message, true));
 }
@@ -818,7 +824,7 @@ function renderViewer(force) {
   }).join('') : '';
   const m = it.manual || {};
   const manual = multi()
-    ? [['A', `A 更好`], ['same', '持平'], ['B', `B 更好`]].map(([k, t], i) => `<button type="button" data-pref="${k}" aria-pressed="${m.pref === k}" title="${k === 'same' ? '' : esc(envs[L.indexOf(k)]?.name)}">${t}（${i + 1}）</button>`).join('')
+    ? GSB.map((g, i) => `<button type="button" data-gsb="${g}" aria-pressed="${m.gsb === g}" title="${esc(g === 0 ? '两者相当' : `${g < 0 ? envs[0]?.name : envs[1]?.name} ${Math.abs(g) === 1 ? '明显更好' : '略好'}`)}">${esc(gsbShort(g))}（${i + 1}）</button>`).join('')
     : Object.entries(RT).map(([k, t], i) => `<button type="button" data-rating="${k}" aria-pressed="${m.rating === k}">${t}（${i + 1}）</button>`).join('');
   $('vside').innerHTML = `
     <div class="row"><button type="button" id="vPrev">← 上一条</button><span class="hint">${pos}/${list.length}</span>
@@ -835,7 +841,7 @@ function renderViewer(force) {
       <button type="button" id="vShoot" title="整段对话重截，会清空该对话各轮的评估与人工标注">重截这段对话</button>
       <button type="button" id="vEval" class="pri" ${it.status === 'done' ? '' : 'disabled'}>${multi() ? (ev?.text ? '重新对比评估（E）' : '对比评估（E）') : ev?.text ? '重新评估（E）' : '模型评估（E）'}</button></div>
 
-    <h4 style="margin:16px 0 6px">人工${multi() ? '偏好' : '评级'}</h4>
+    <h4 style="margin:16px 0 6px">人工${multi() ? `偏好 <span class="hint" style="font-weight:400">B 相对 A 打分：负数 A 好，正数 B 好</span>` : '评级'}</h4>
     <div class="row rate" role="group" aria-label="人工标注">${manual}</div>
     <label class="f" for="vNote">备注</label>
     <textarea id="vNote" rows="3" placeholder="记录亮点、问题，失焦自动保存">${esc(m.note || '')}</textarea>
@@ -854,7 +860,7 @@ function renderViewer(force) {
   $('vShoot').onclick = () => confirm('重截这段对话的全部轮次？') && act(() => api('POST', `/api/batches/${bid()}/capture`, { ids: [it.id] }), '已加入截图队列');
   $('vEval').onclick = () => act(() => api('POST', `/api/batches/${bid()}/eval`, { ids: [it.id] }), '已提交评估');
   if ($('vCopy')) $('vCopy').onclick = () => copyImage(it.compareImage);
-  $('vside').querySelectorAll('[data-pref]').forEach((b) => (b.onclick = () => setManual('pref', b.dataset.pref)));
+  $('vside').querySelectorAll('[data-gsb]').forEach((b) => (b.onclick = () => setManual('gsb', Number(b.dataset.gsb))));
   $('vside').querySelectorAll('[data-rating]').forEach((b) => (b.onclick = () => setManual('rating', b.dataset.rating)));
   $('vNote').onblur = (e) => {
     if (e.target.value === (it.manual?.note || '')) return;

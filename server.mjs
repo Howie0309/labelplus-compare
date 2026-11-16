@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import * as lp from './lib/labelplus.mjs';
 import * as login from './lib/login.mjs';
 import * as store from './lib/store.mjs';
+import { GSB, gsbPref } from './lib/store.mjs';
 import * as capture from './lib/capture.mjs';
 import * as evaluate from './lib/evaluate.mjs';
 import { exportBatch, exportJsonl } from './lib/excel.mjs';
@@ -275,8 +276,11 @@ const routes = [
     if (!it) throw new Error('条目不存在');
     if (body.manual) {
       const m = body.manual;
+      // 多环境人工打分：gsb 为 B 相对 A 的五档分数（-1 A 明显更好 … 1 B 明显更好），pref 由它推出，供筛选与胜率统计
+      const gsb = 'gsb' in m ? (GSB.includes(Number(m.gsb)) && m.gsb !== null && m.gsb !== '' ? Number(m.gsb) : null) : it.manual?.gsb ?? null;
       it.manual = {
-        pref: 'pref' in m ? (['A', 'B', 'C', 'D', 'same'].includes(m.pref) ? m.pref : null) : it.manual?.pref ?? null,
+        gsb,
+        pref: 'gsb' in m ? gsbPref(gsb) : 'pref' in m ? (['A', 'B', 'C', 'D', 'same'].includes(m.pref) ? m.pref : null) : it.manual?.pref ?? null,
         rating: 'rating' in m ? (['good', 'ok', 'bad'].includes(m.rating) ? m.rating : null) : it.manual?.rating ?? null,
         note: 'note' in m ? String(m.note ?? '') : it.manual?.note ?? '',
       };
