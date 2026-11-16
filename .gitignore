@@ -1,0 +1,7 @@
+# 忽略依赖、个人数据与密钥（config.json 里有 API Key 和 labelplus Cookie）
+node_modules/
+batches/
+config.json
+.chrome-profile/
+.DS_Store
+server.log

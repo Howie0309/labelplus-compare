@@ -1,0 +1,118 @@
+// 端到端冒烟：假 labelplus + 假 VLM → 解析链接 → 建批次（拉 2 段对话）→ 无头 Chrome 截图 → 单条评估 → 人工标注 → 导出 Excel / JSONL。
+// 导出的 Excel 按图片锚点核对每轮截图是否归到对应行。需要本机装有 Google Chrome。
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import ExcelJS from 'exceljs';
+import * as fake from './fake-labelplus.mjs';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const lp = await fake.start();
+const port = 32000 + Math.floor(Math.random() * 1000);
+const cfgFile = path.join(os.tmpdir(), `labelplus-smoke-${port}.json`);
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'labelplus-profile-'));
+fs.writeFileSync(cfgFile, JSON.stringify({ baseUrl: `http://127.0.0.1:${lp.port}/v1`, apiKey: 'k', model: 'fake-vlm' }));
+const child = spawn(process.execPath, ['server.mjs'], {
+  cwd: ROOT,
+  env: { ...process.env, PORT: String(port), LABELPLUS_BASE: `http://127.0.0.1:${lp.port}/labelplusapi`, LABELPLUS_CONFIG: cfgFile, LABELPLUS_PROFILE: profile, LABELPLUS_LOGIN_HEADLESS: '1' },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+child.stderr.on('data', (d) => process.stderr.write(d));
+const base = `http://127.0.0.1:${port}`;
+const call = async (method, url, body, status = 200) => {
+  const res = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body), signal: AbortSignal.timeout(60000) });
+  assert.equal(res.status, status, `${method} ${url} -> ${res.status} ${status === 200 ? await res.clone().text() : ''}`);
+  return res;
+};
+const json = async (...a) => (await call(...a)).json();
+const until = async (fn, ms, what) => {
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > end) throw new Error(`等待超时：${what}`);
+    await new Promise((r) => setTimeout(r, 500));
+  }
+};
+let batchId;
+try {
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('启动超时')), 10000);
+    child.once('exit', (code) => reject(new Error(`服务退出 ${code}`)));
+    child.stdout.on('data', (d) => String(d).includes('已启动') && (clearTimeout(timer), resolve()));
+  });
+  assert.match(await (await call('GET', '/')).text(), /labelplus 对比截图与评估/);
+
+  // 没 Cookie 时解析会提示更新 Cookie
+  const noCookie = await (await call('POST', '/api/parse', { link: lp.link }, 400)).json();
+  assert.equal(noCookie.cookie, true);
+  await call('POST', '/api/cookie', { cookie: 'not a cookie' }, 400);
+
+  // 自动获取：专用 Chrome 打开登录页，登录完成后 Cookie 自动保存
+  await json('POST', '/api/cookie/login', { link: lp.link });
+  await until(async () => (await json('GET', '/api/status')).login.status === 'done', 30000, '自动登录');
+  assert.equal((await json('POST', '/api/parse', { link: lp.link })).total, 3);
+  // Cookie 失效后无头续期：复用专用资料目录里的登录会话
+  await json('POST', '/api/cookie', { cookie: 'expired=1' });
+  assert.equal((await (await call('POST', '/api/parse', { link: lp.link }, 400)).json()).cookie, true);
+  await json('POST', '/api/cookie/refresh');
+  assert.equal((await json('POST', '/api/parse', { link: lp.link })).total, 3);
+
+  // 手动粘贴整段 cURL 也可以
+  const saved = await json('POST', '/api/cookie', { cookie: `curl 'http://x' -H 'Accept: */*' -b '${fake.COOKIE}'`, link: lp.link });
+  assert.equal(saved.verified, true);
+
+  const parsed = await json('POST', '/api/parse', { link: lp.link });
+  assert.equal(parsed.total, 3);
+  assert.deepEqual(parsed.envs.map((e) => e.id), [11, 22]);
+
+  // A=线上(11)，B=联调(22)；只取前 2 段对话（共 3 轮）
+  batchId = (await json('POST', '/api/batches', { link: lp.link, envIds: [11, 22], limit: 2, trim: true })).id;
+  const b = await until(async () => {
+    const x = await json('GET', `/api/batches/${batchId}`);
+    return x.enum.status === 'done' && x.items.length === 3 && x.items.every((i) => ['done', 'failed'].includes(i.status)) && x;
+  }, 90000, '截图完成');
+  for (const it of b.items) assert.equal(it.status, 'done', `${it.query}: ${it.error}`);
+  const second = b.items.find((i) => i.turn === 2);
+  assert.deepEqual(second.context, ['iPhone 17 和 16 有什么区别']);
+  assert.ok(second.images['11'] && second.images['22'] && second.compareImage);
+  assert.equal((await call('GET', second.images['22'])).headers.get('content-type'), 'image/png');
+
+  // 单条评估：偏好 B，总分 A 7 / B 9
+  await json('POST', `/api/batches/${batchId}/eval`, { ids: [second.id] });
+  const ev = await until(async () => (await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id).eval?.status === 'done' &&
+    (await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id).eval, 20000, '评估完成');
+  assert.equal(ev.pref, 'B');
+  assert.deepEqual(ev.scores, { A: 7, B: 9 });
+  await call('PATCH', `/api/batches/${batchId}/items/${second.id}`, { manual: { pref: 'same', note: 'smoke' } });
+
+  // Excel：表头 + 每轮一行，两列截图锚在本行
+  const buf = Buffer.from(await (await call('GET', `/api/batches/${batchId}/export?quality=preview&fields=context,status,img,model,dims,eval,manual`)).arrayBuffer());
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  const ws = wb.worksheets[0];
+  const header = ws.getRow(1).values.slice(1);
+  assert.ok(header.includes('query') && header.includes('截图_线上') && header.includes('截图_策略-genui-联调') && header.includes('上文'));
+  // 每张图按左上角锚点归属单元格（「自动评估」就是这样把图片归到行的）：第 2 轮那一行应正好有两个环境的截图
+  const headerOf = (c) => ws.getRow(1).getCell(c).text;
+  const rowOfQuery = (q) => { let n = 0; ws.eachRow((row, i) => { if (row.getCell(4).text === q) n = i; }); return n; };
+  const r2 = rowOfQuery('那价格呢');
+  const images = ws.getImages();
+  const owned = images.filter((im) => Math.floor(im.range.tl.row) + 1 === r2).map((im) => headerOf(Math.floor(im.range.tl.col) + 1)).sort();
+  assert.deepEqual(owned, ['截图_策略-genui-联调', '截图_线上']);
+  assert.equal(images.length, 6);
+  const jsonl = (await (await call('GET', `/api/batches/${batchId}/export.jsonl`)).text()).trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(jsonl.length, 3);
+  assert.ok(fs.existsSync(jsonl[1].envs[1].image));
+  assert.equal(jsonl.find((x) => x.turn === 2).manual.pref, 'same');
+  console.log('冒烟通过：Cookie 校验、解析、拉取 2 段对话、截图 3 轮 × 2 环境 + 拼图、单条对比评估、人工偏好、Excel（截图按行归属）、JSONL');
+} finally {
+  if (batchId) await call('DELETE', `/api/batches/${batchId}`).catch(() => {});
+  child.kill();
+  lp.server.close();
+  fs.rmSync(cfgFile, { force: true });
+  fs.rmSync(profile, { recursive: true, force: true });
+}

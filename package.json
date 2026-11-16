@@ -1,0 +1,20 @@
+{
+  "name": "labelplus-compare",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "labelplus 评估页多环境逐轮截图、对比评估与导出（Playwright + 本机 Chrome）",
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "test:smoke": "node test/smoke.mjs",
+    "start": "node ./server.mjs"
+  },
+  "dependencies": {
+    "exceljs": "4.4.0",
+    "playwright-core": "1.64.1",
+    "sharp": "0.35.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
