@@ -138,6 +138,12 @@ try {
   assert.equal(again.items.length, 4);
   const otherEval = lp.link.replace('/1258076/', '/999/');
   assert.match((await (await call('POST', `/api/batches/${batchId}/extend`, { link: otherEval }, 400)).json()).error, /不是同一个评估/);
+
+  // 从评估第 1 条开始：链接给的是第 3 条，也应顺着「上一条」回到第 1 条
+  const b2 = (await json('POST', '/api/batches', { link: lp.link.replace('/101/', '/103/'), envIds: [11], limit: 1, fromFirst: true })).id;
+  const first = await until(async () => (await json('GET', `/api/batches/${b2}`)).items[0], 20000, '从第 1 条建批次');
+  assert.equal(first.chatId, 101);
+  await call('DELETE', `/api/batches/${b2}`);
   console.log('冒烟通过：Cookie 校验、解析、拉取 2 段对话、截图 3 轮 × 2 环境 + 拼图、单条对比评估、人工偏好、Excel（截图按行归属）、JSONL');
 } finally {
   if (batchId) await call('DELETE', `/api/batches/${batchId}`).catch(() => {});

@@ -225,7 +225,10 @@ const routes = [
 
   ['GET', '/api/batches', () => store.all().map(brief)],
   ['POST', '/api/batches', async ({ body }) => {
-    const { chatId, evaluationId } = parseSource(body);
+    const src = parseSource(body);
+    const { evaluationId } = src;
+    // fromFirst：不从链接这一条，而是从评估的第 1 条开始（与 labelplus 里看到的顺序一致）
+    const chatId = body.fromFirst ? await lp.firstChat(loadConfig().cookie, src.chatId, evaluationId) : src.chatId;
     const info = await lp.chatInfo(loadConfig().cookie, chatId, evaluationId); // 顺便校验 Cookie
     const all = info.pages.map((p) => ({ id: p.envId, name: p.envName }));
     // 环境顺序即对比顺序：第一个是 A（通常为基线），第二个是 B
@@ -259,7 +262,7 @@ const routes = [
   ['POST', '/api/batches/:id/enumerate', ({ id }) => (capture.startEnumerate(mustBatch(id).id), { ok: true })],
   ['POST', '/api/batches/:id/enumerate/stop', ({ id }) => (capture.stopEnumerate(mustBatch(id).id), { ok: true })],
   // 补充截图：给了链接就从那一条开始，否则接着上次的位置；more=0 取到最后。已截过的对话自动跳过
-  ['POST', '/api/batches/:id/extend', ({ id, body }) => {
+  ['POST', '/api/batches/:id/extend', async ({ id, body }) => {
     const b = mustBatch(id);
     let chatId = null;
     if (String(body.link || '').trim()) {
@@ -267,6 +270,7 @@ const routes = [
       if (l.evaluationId !== b.source.evaluationId) throw new Error(`这条链接属于 evaluation ${l.evaluationId}，和本批次（${b.source.evaluationId}）不是同一个评估，请新建批次`);
       chatId = l.chatId;
     }
+    if (body.fromFirst) chatId = await lp.firstChat(loadConfig().cookie, chatId || b.source.startChatId, b.source.evaluationId);
     capture.extend(b.id, { chatId, more: Math.max(0, Math.round(Number(body.more) || 0)) });
     return brief(b);
   }],

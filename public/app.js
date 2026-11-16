@@ -296,7 +296,8 @@ async function parseLink() {
 
 function renderParsed() {
   const p = S.parsed;
-  const remain = p.total - p.pos + 1;
+  p.fromFirst ??= p.pos > 1; // 默认从评估第 1 条开始，和 labelplus 里看到的顺序一致
+  const remain = p.fromFirst ? p.total : p.total - p.pos + 1;
   const on = p.order.filter((id) => p.on.has(id));
   const name = (id) => p.envs.find((e) => e.id === id)?.name || id;
   $('nInfo').innerHTML = `
@@ -310,16 +311,25 @@ function renderParsed() {
         <button type="button" class="sm" data-up="${id}" ${p.order[0] === id ? 'disabled' : ''}>上移</button></div>`;
     }).join('')}
     <fieldset style="border:none;padding:0;margin:12px 0 0">
+      <legend class="hint">从哪一条开始</legend>
+      <label><input type="radio" name="nFrom" value="first" ${p.fromFirst ? 'checked' : ''} /> 评估的第 1 条</label>
+      <label style="margin-left:16px"><input type="radio" name="nFrom" value="link" ${p.fromFirst ? '' : 'checked'} /> 链接这一条（第 ${p.pos} 条）</label>
+    </fieldset>
+    <fieldset style="border:none;padding:0;margin:8px 0 0">
       <legend class="hint">范围（顺着「下一条」往后取）</legend>
       <label><input type="radio" name="nScope" value="1" checked /> 仅这一条</label>
       <label style="margin-left:16px"><input type="radio" name="nScope" value="n" /> 前 <input id="nN" type="number" min="1" value="${Math.min(100, remain)}" style="width:80px" /> 条</label>
-      <label style="margin-left:16px"><input type="radio" name="nScope" value="0" /> 剩余全部（${remain} 条，3 并发约 ${Math.ceil((remain * 6) / 60)} 分钟）</label>
+      <label style="margin-left:16px"><input type="radio" name="nScope" value="0" /> ${p.fromFirst ? '全部' : '剩余全部'}（${remain} 条，3 并发约 ${Math.ceil((remain * 6) / 60)} 分钟）</label>
     </fieldset>
     <label style="display:block;margin-top:10px"><input id="nTrim" type="checkbox" checked /> 只保留问题与答案正文（裁掉工具栏、推荐问题、评估角标）</label>
     <label class="f" for="nName">批次名称（可选）</label>
     <input id="nName" type="text" placeholder="例如 genui 联调 vs 线上 · 11月第3周" />
     <div class="row" style="margin-top:14px"><button id="nGo" class="pri" type="button" ${on.length ? '' : 'disabled'}>创建并开始截图</button>
       <span class="hint">${on.length > 1 ? `将对比 ${on.map((id, i) => `${L[i]}=${esc(name(id))}`).join('，')}` : on.length ? '单环境：模型评估按单图打分' : '至少选一个环境'}</span></div>`;
+  $('nInfo').querySelectorAll('input[name=nFrom]').forEach((r) => (r.onchange = () => {
+    p.fromFirst = r.value === 'first';
+    renderParsed();
+  }));
   $('nInfo').querySelectorAll('[data-env]').forEach((c) => (c.onchange = () => {
     c.checked ? p.on.add(Number(c.dataset.env)) : p.on.delete(Number(c.dataset.env));
     renderParsed();
@@ -333,7 +343,7 @@ function renderParsed() {
   $('nGo').onclick = () => act(async () => {
     const scope = document.querySelector('input[name=nScope]:checked').value;
     const limit = scope === 'n' ? Number($('nN').value) || 1 : Number(scope);
-    const b = await api('POST', '/api/batches', { link: p.link, name: $('nName').value, envIds: on, limit, trim: $('nTrim').checked });
+    const b = await api('POST', '/api/batches', { link: p.link, name: $('nName').value, envIds: on, limit, trim: $('nTrim').checked, fromFirst: p.fromFirst });
     S.parsed = null;
     await openBatch(b.id);
     return b;
@@ -433,6 +443,7 @@ function renderBatch(rebuild) {
           <div class="row" style="margin-top:8px">
             <label><input type="radio" name="xScope" value="n" checked /> 往后 <input id="xN" type="number" min="1" value="50" style="width:80px" /> 条</label>
             <label><input type="radio" name="xScope" value="0" /> 一直到最后</label>
+            <label><input type="checkbox" id="xFirst" /> 从评估第 1 条开始（补齐前面漏掉的）</label>
             <button type="button" id="xGo" class="pri">开始补充</button>
             <span class="hint">已截过的对话会自动跳过，不重复截、不占名额；新条目沿用本批次的环境和裁剪设置。</span>
           </div>
@@ -459,7 +470,7 @@ function renderBatch(rebuild) {
     });
     $('xGo').onclick = () => act(async () => {
       const more = document.querySelector('input[name=xScope]:checked').value === 'n' ? Number($('xN').value) || 1 : 0;
-      const r = await api('POST', `/api/batches/${bid()}/extend`, { link: $('xLink').value, more });
+      const r = await api('POST', `/api/batches/${bid()}/extend`, { link: $('xLink').value, more, fromFirst: $('xFirst').checked });
       $('xLink').value = '';
       return r;
     }, '开始补充，新拉到的对话会自动截图');

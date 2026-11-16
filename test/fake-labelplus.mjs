@@ -60,7 +60,7 @@ export function start(port = 0) {
       const { query_id } = JSON.parse(body);
       const i = CHATS.findIndex((c) => c.id === query_id);
       if (i < 0) return res.writeHead(200, { 'Content-Type': 'text/plain' }), res.end('record not found'); // 真实接口对不存在的 chat 返回纯文本
-      return json({ data: { cur_pos: i + 1, total: CHATS.length, next_chat_id: CHATS[i + 1]?.id || 0, query_info: CHATS[i].turns.map((q, k) => ({ query_id: query_id * 10 + k, query: q })) } });
+      return json({ data: { cur_pos: i + 1, total: CHATS.length, next_chat_id: CHATS[i + 1]?.id || 0, pre_chat_id: CHATS[i - 1]?.id || 0, query_info: CHATS[i].turns.map((q, k) => ({ query_id: query_id * 10 + k, query: q })) } });
     }
     if (url.pathname === '/labelplusapi/query/env_info') {
       const { query_id } = JSON.parse(body);
