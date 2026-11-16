@@ -181,7 +181,9 @@ async function openSettings() {
   $('sKey').value = '';
   $('sKey').placeholder = c.hasKey ? `已保存 ${c.keyMask}（留空则不修改）` : '未设置';
   $('sEval').value = c.judgePrompt;
-  $('sEval').placeholder = `留空时：多环境用默认对比 Prompt，单环境用默认打分 Prompt\n\n${c.defaultComparePrompt}`;
+  $('sEval').placeholder = `留空时使用默认对比 Prompt：\n\n${c.defaultComparePrompt}`;
+  $('sSingle').value = c.singlePrompt;
+  $('sSingle').placeholder = `留空时使用默认单环境 Prompt：\n\n${c.defaultSinglePrompt}`;
   $('sSum').value = c.summaryPrompt;
   $('sSum').placeholder = c.defaultSummaryPrompt;
   $('sCache').checked = c.cacheControl;
@@ -195,7 +197,7 @@ async function openSettings() {
 async function saveSettings() {
   S.cfg = await api('POST', '/api/config', {
     baseUrl: $('sBase').value, apiKey: $('sKey').value, model: $('sModel').value,
-    judgePrompt: $('sEval').value, summaryPrompt: $('sSum').value, cacheControl: $('sCache').checked,
+    judgePrompt: $('sEval').value, singlePrompt: $('sSingle').value, summaryPrompt: $('sSum').value, cacheControl: $('sCache').checked,
     captureConcurrency: Number($('sCConc').value), captureRetries: Number($('sCRetry').value),
     evalConcurrency: Number($('sConc').value), evalRetries: Number($('sEvalRetry').value),
   });
@@ -224,7 +226,8 @@ document.querySelectorAll('[data-default]').forEach((b) => {
   b.onclick = () => {
     const k = b.dataset.default;
     if (k === 'summary') $('sSum').value = S.cfg.defaultSummaryPrompt;
-    else $('sEval').value = k === 'single' ? S.cfg.defaultSinglePrompt : S.cfg.defaultComparePrompt;
+    else if (k === 'single') $('sSingle').value = S.cfg.defaultSinglePrompt;
+    else $('sEval').value = S.cfg.defaultComparePrompt;
   };
 });
 
@@ -522,7 +525,15 @@ function prefStats(b) {
     const s = b.items.map((i) => modelScore(i, k)).filter((x) => typeof x === 'number');
     return s.length ? `${L[k]} <b class="score">${(s.reduce((a, x) => a + x, 0) / s.length).toFixed(1)}</b>` : '';
   }).filter(Boolean).join(' / ');
-  return `${line('模型', modelPref)}${line('人工', (i) => i.manual?.pref)}${avg ? `<span>平均总分 ${avg}</span>` : ''}`;
+  return `${line('模型', modelPref)}${line('人工', (i) => i.manual?.pref)}${avg ? `<span>平均总分 ${avg}</span>` : ''}${singleAvg(b)}`;
+}
+
+function singleAvg(b) {
+  const parts = b.envs.map((e, k) => {
+    const s = b.items.map((i) => i.envEvals?.[e.id]).filter((x) => x?.status === 'done' && typeof x.score === 'number').map((x) => x.score);
+    return s.length ? `${L[k]} <b class="score">${(s.reduce((a, x) => a + x, 0) / s.length).toFixed(1)}</b>（${s.length} 条）` : '';
+  }).filter(Boolean);
+  return parts.length ? `<span>单评平均 ${parts.join(' / ')}</span>` : '';
 }
 
 const fmtK = (n) => (n >= 10000 ? `${(n / 1000).toFixed(1)}k` : String(n));
@@ -536,15 +547,19 @@ function renderTools() {
   const b = S.cur;
   const c = b.counts;
   const n = selIds().length;
-  const unevaluated = b.items.filter(FILTERS.unevaluated[1]).length;
-  const evalBusy = b.evalPending || b.items.some((i) => ['queued', 'running'].includes(i.eval?.status));
+  const mode = evalMode();
+  const unevaluated = b.items.filter((i) => needsEval(i, mode)).length;
+  const evalBusy = b.evalPending || b.items.some((i) => [i.eval, ...Object.values(i.envEvals || {})].some((e) => ['queued', 'running'].includes(e?.status)));
+  const modeSel = multi()
+    ? `<select id="evMode" aria-label="评估方式">${[['compare', `对比评估（${b.envs.map((e, k) => L[k]).join(' vs ')}）`], ...b.envs.map((e, k) => [String(e.id), `单评 ${L[k]} ${e.name}`])]
+        .map(([v, t]) => `<option value="${v}" ${v === mode ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>` : '';
   $('bTools').innerHTML = `
     <div class="grp"><span>截图</span>
       <button type="button" data-a="retryFailed" ${c.failed ? '' : 'disabled'}>重试失败（${c.failed}）</button>
       <button type="button" data-a="shootUnfinished" ${c.failed + c.pending ? '' : 'disabled'}>截取未完成（${c.failed + c.pending}）</button>
       <button type="button" data-a="reshootSel" ${n ? '' : 'disabled'} title="按所在对话整段重截">重截选中（${n}）</button>
       <button type="button" data-a="cancelShoot" ${c.queued ? '' : 'disabled'}>取消排队</button></div>
-    <div class="grp"><span>模型评估</span>
+    <div class="grp"><span>模型评估</span>${modeSel}
       <button type="button" data-a="evalSel" ${n ? '' : 'disabled'}>评估选中（${n}）</button>
       <button type="button" data-a="evalRest" class="pri" ${unevaluated ? '' : 'disabled'}>批量评估待评估（${unevaluated}）</button>
       <button type="button" data-a="cancelEval" ${evalBusy ? '' : 'disabled'}>取消评估</button></div>
@@ -555,6 +570,27 @@ function renderTools() {
     const a = e.target.closest('[data-a]')?.dataset.a;
     if (a) runAction(a);
   };
+  if ($('evMode')) $('evMode').onchange = (e) => {
+    S.evalMode = e.target.value;
+    localStorage.setItem('lpEvalMode', S.evalMode);
+    renderTools();
+  };
+}
+
+// 评估方式：compare = 多环境对比（A vs B）；环境 id = 只评这一个环境（单环境打分，结果另存，不覆盖对比）
+function evalMode() {
+  const m = S.evalMode ?? localStorage.getItem('lpEvalMode') ?? 'compare';
+  return multi() && S.cur.envs.some((e) => String(e.id) === m) ? m : 'compare';
+}
+const modeEnv = () => (evalMode() === 'compare' ? null : Number(evalMode()));
+function modeLabel() {
+  const k = S.cur.envs.findIndex((e) => e.id === modeEnv());
+  return k < 0 ? (multi() ? '对比评估' : '评估') : `单评 ${L[k]}`;
+}
+function needsEval(it, mode) {
+  if (it.status !== 'done') return false;
+  if (mode === 'compare') return it.eval?.status !== 'done';
+  return !!it.images[mode] && it.envEvals?.[mode]?.status !== 'done';
 }
 
 function runAction(a) {
@@ -566,8 +602,8 @@ function runAction(a) {
     reshootSel: () => confirm(`重新截取选中条目所在的对话？原截图、模型评估和人工标注会被清空。`) &&
       act(() => api('POST', `${p}/capture`, { ids }), (r) => `已加入队列 ${r.queued} 段对话`),
     cancelShoot: () => act(() => api('POST', `${p}/capture/cancel`), '已取消排队'),
-    evalSel: () => act(() => api('POST', `${p}/eval`, { ids }), (r) => `已提交评估 ${r.queued} 条（仅截图成功的会评估）`),
-    evalRest: () => act(() => api('POST', `${p}/eval`, { ids: S.cur.items.filter(FILTERS.unevaluated[1]).map((i) => i.id) }), (r) => `已提交评估 ${r.queued} 条`),
+    evalSel: () => act(() => api('POST', `${p}/eval`, { ids, envId: modeEnv() }), (r) => `已提交${modeLabel()} ${r.queued} 条（仅截图成功的会评估）`),
+    evalRest: () => act(() => api('POST', `${p}/eval`, { ids: S.cur.items.filter((i) => needsEval(i, evalMode())).map((i) => i.id), envId: modeEnv() }), (r) => `已提交${modeLabel()} ${r.queued} 条`),
     cancelEval: () => act(() => api('POST', `${p}/eval/cancel`), '已取消排队中的评估'),
     summary: () => act(async () => {
       const r = await api('POST', `${p}/summary`, ids.length ? { ids } : { scope: 'all' });
@@ -610,6 +646,7 @@ function renderGrid() {
                 <span class="badge ${it.status}">${ST[it.status]}${it.status === 'shooting' ? '…' : ''}</span>${ev}
                 ${mp ? `<span class="tag">模型 ${prefLabel(mp)}</span>` : ''}
                 ${scores.length ? `<span class="score">${scores.join(' : ')}</span>` : ''}
+                ${envs.length > 1 ? envs.map((e, k) => { const s = it.envEvals?.[e.id]; return s?.status === 'done' && typeof s.score === 'number' ? `<span class="tag" title="单环境评估">单评 ${L[k]} <b class="score">${s.score}</b></span>` : s?.status === 'failed' ? `<span class="tag err">单评 ${L[k]} 失败</span>` : ['queued', 'running'].includes(s?.status) ? `<span class="tag">单评 ${L[k]}…</span>` : ''; }).join('') : ''}
                 ${it.manual?.pref ? `<span class="tag">人工 ${prefLabel(it.manual.pref)}</span>` : ''}
                 ${it.manual?.rating ? `<span class="tag">人工：${RT[it.manual.rating]}</span>` : ''}
               </div>
@@ -768,6 +805,17 @@ function renderViewer(force) {
     evalHtml += `<p class="hint">${head ? `${head} · ` : ''}${esc(ev.model || '')} · ${ev.at ? new Date(ev.at).toLocaleString('zh-CN') : ''}${usage}</p>${md(ev.text)}`;
   }
   if (!evalHtml) evalHtml = '<p class="hint">尚未进行模型评估。</p>';
+  // 多环境批次：每个环境还可以单独打分（不和另一个环境比较），结果与对比评估分开保存
+  const singleHtml = multi() ? envs.map((e, k) => {
+    const s = it.envEvals?.[e.id];
+    const busy = ['queued', 'running'].includes(s?.status);
+    const head = s?.status === 'done' ? `${typeof s.score === 'number' ? `总分 <b class="score">${s.score}</b>/10 · ` : ''}${esc(s.model || '')} · ${s.at ? new Date(s.at).toLocaleString('zh-CN') : ''}`
+      : busy ? `${EV[s.status]}…${s.error ? ` <span class="warn">${esc(s.error)}</span>` : ''}` : s?.status === 'failed' ? `<span class="err">评估失败：${esc(s.error)}</span>` : '未评估';
+    return `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+      <div class="row">${envTag(k, e.name)}<span class="hint">${head}</span><span class="spacer"></span>
+        <button type="button" class="sm" data-single="${e.id}" ${it.images[e.id] && !busy ? '' : 'disabled'}>${s?.text ? '重新单评' : '单独评估'}</button></div>
+      ${s?.text && s.status !== 'running' ? `<details data-sd="${e.id}" ${S.viewer.sd?.has(String(e.id)) ? 'open' : ''}><summary>查看单评详情</summary>${md(s.text)}</details>` : ''}</div>`;
+  }).join('') : '';
   const m = it.manual || {};
   const manual = multi()
     ? [['A', `A 更好`], ['same', '持平'], ['B', `B 更好`]].map(([k, t], i) => `<button type="button" data-pref="${k}" aria-pressed="${m.pref === k}" title="${k === 'same' ? '' : esc(envs[L.indexOf(k)]?.name)}">${t}（${i + 1}）</button>`).join('')
@@ -785,14 +833,21 @@ function renderViewer(force) {
     ${it.error ? `<p class="${it.status === 'failed' ? 'err' : 'warn'} hint">${esc(it.error)}</p>` : ''}
     <div class="row" style="margin-top:8px">
       <button type="button" id="vShoot" title="整段对话重截，会清空该对话各轮的评估与人工标注">重截这段对话</button>
-      <button type="button" id="vEval" class="pri" ${it.status === 'done' ? '' : 'disabled'}>${ev?.text ? '重新评估（E）' : '模型评估（E）'}</button></div>
+      <button type="button" id="vEval" class="pri" ${it.status === 'done' ? '' : 'disabled'}>${multi() ? (ev?.text ? '重新对比评估（E）' : '对比评估（E）') : ev?.text ? '重新评估（E）' : '模型评估（E）'}</button></div>
 
     <h4 style="margin:16px 0 6px">人工${multi() ? '偏好' : '评级'}</h4>
     <div class="row rate" role="group" aria-label="人工标注">${manual}</div>
     <label class="f" for="vNote">备注</label>
     <textarea id="vNote" rows="3" placeholder="记录亮点、问题，失焦自动保存">${esc(m.note || '')}</textarea>
 
-    <h4 style="margin:16px 0 6px">模型评估</h4>${evalHtml}`;
+    <h4 style="margin:16px 0 6px">${multi() ? '对比评估' : '模型评估'}</h4>${evalHtml}
+    ${singleHtml ? `<h4 style="margin:16px 0 0">单环境评估</h4><p class="hint" style="margin:2px 0 0">只看这一个环境打分，不和另一个环境比较；与对比评估分开保存。</p>${singleHtml}` : ''}`;
+  $('vside').querySelectorAll('[data-sd]').forEach((d) => (d.ontoggle = () => {
+    S.viewer.sd ??= new Set();
+    d.open ? S.viewer.sd.add(d.dataset.sd) : S.viewer.sd.delete(d.dataset.sd); // 轮询重绘时保持展开状态
+  }));
+  $('vside').querySelectorAll('[data-single]').forEach((btn) => (btn.onclick = () =>
+    act(() => api('POST', `/api/batches/${bid()}/eval`, { ids: [it.id], envId: Number(btn.dataset.single) }), '已提交单环境评估')));
   $('vPrev').onclick = () => stepViewer(-1);
   $('vNext').onclick = () => stepViewer(1);
   $('vClose').onclick = closeViewer;
@@ -820,7 +875,7 @@ async function copyImage(url) {
 // ---------- 导出 ----------
 const EXPORT_FIELDS = [
   ['context', '上文（多轮时前几轮问题）'], ['status', '截图状态'], ['img', '各环境截图（嵌入图片）'], ['cmp', '左右拼图（嵌入图片）'],
-  ['model', '模型偏好与总分'], ['dims', '各维度分数'], ['eval', '模型评估全文'], ['manual', '人工偏好 / 评级与备注'],
+  ['model', '模型偏好与总分'], ['dims', '各维度分数'], ['eval', '模型评估全文'], ['single', '单环境评估（各环境总分与全文）'], ['manual', '人工偏好 / 评级与备注'],
   ['file', '截图文件路径'], ['summary', '整体分析（单独工作表）'],
 ];
 const DEFAULT_OFF = ['cmp', 'file']; // 拼图与单图重复，默认不嵌，控制文件体积

@@ -14,10 +14,12 @@ const lp = await fake.start();
 const port = 32000 + Math.floor(Math.random() * 1000);
 const cfgFile = path.join(os.tmpdir(), `labelplus-smoke-${port}.json`);
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'labelplus-profile-'));
+// 用临时批次目录，避免和正在运行的服务同时读写真实批次
+const batches = fs.mkdtempSync(path.join(os.tmpdir(), 'labelplus-batches-'));
 fs.writeFileSync(cfgFile, JSON.stringify({ baseUrl: `http://127.0.0.1:${lp.port}/v1`, apiKey: 'k', model: 'fake-vlm' }));
 const child = spawn(process.execPath, ['server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(port), LABELPLUS_BASE: `http://127.0.0.1:${lp.port}/labelplusapi`, LABELPLUS_CONFIG: cfgFile, LABELPLUS_PROFILE: profile, LABELPLUS_LOGIN_HEADLESS: '1' },
+  env: { ...process.env, PORT: String(port), LABELPLUS_BASE: `http://127.0.0.1:${lp.port}/labelplusapi`, LABELPLUS_CONFIG: cfgFile, LABELPLUS_PROFILE: profile, LABELPLUS_BATCHES: batches, LABELPLUS_LOGIN_HEADLESS: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 child.stderr.on('data', (d) => process.stderr.write(d));
@@ -89,13 +91,24 @@ try {
   assert.deepEqual(ev.scores, { A: 7, B: 9 });
   await call('PATCH', `/api/batches/${batchId}/items/${second.id}`, { manual: { pref: 'same', note: 'smoke' } });
 
+  // 单环境评估：只评 B（env 22），结果另存在 envEvals，不覆盖对比评估
+  await json('POST', `/api/batches/${batchId}/eval`, { ids: [second.id], envId: 22 });
+  const single = await until(async () => {
+    const it = (await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id);
+    return it.envEvals?.['22']?.status === 'done' && it;
+  }, 20000, '单环境评估完成');
+  assert.equal(single.envEvals['22'].score, 7);
+  assert.equal(single.eval.pref, 'B');
+  await call('POST', `/api/batches/${batchId}/eval`, { ids: [second.id], envId: 999 }, 400);
+
   // Excel：表头 + 每轮一行，两列截图锚在本行
-  const buf = Buffer.from(await (await call('GET', `/api/batches/${batchId}/export?quality=preview&fields=context,status,img,model,dims,eval,manual`)).arrayBuffer());
+  const buf = Buffer.from(await (await call('GET', `/api/batches/${batchId}/export?quality=preview&fields=context,status,img,model,dims,eval,single,manual`)).arrayBuffer());
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf);
   const ws = wb.worksheets[0];
   const header = ws.getRow(1).values.slice(1);
   assert.ok(header.includes('query') && header.includes('截图_线上') && header.includes('截图_策略-genui-联调') && header.includes('上文'));
+  assert.ok(header.includes('单评总分(/10)_策略-genui-联调'));
   // 每张图按左上角锚点归属单元格（「自动评估」就是这样把图片归到行的）：第 2 轮那一行应正好有两个环境的截图
   const headerOf = (c) => ws.getRow(1).getCell(c).text;
   const rowOfQuery = (q) => { let n = 0; ws.eachRow((row, i) => { if (row.getCell(4).text === q) n = i; }); return n; };
@@ -131,4 +144,5 @@ try {
   lp.server.close();
   fs.rmSync(cfgFile, { force: true });
   fs.rmSync(profile, { recursive: true, force: true });
+  fs.rmSync(batches, { recursive: true, force: true });
 }

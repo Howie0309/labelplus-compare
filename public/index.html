@@ -176,11 +176,15 @@
   <input id="sKey" type="password" autocomplete="off" />
   <label class="f" for="sModel">模型名</label>
   <input id="sModel" type="text" autocomplete="off" />
-  <label class="f" for="sEval">逐条评估 Judge Prompt（作为 system 发送，所有条目共用；留空用默认）</label>
-  <p class="hint" style="margin:0 0 4px">只写评估角色、维度、标准和输出格式。问题、上文、各环境截图由程序放进 user 消息，多环境依次标为 A、B。输出 JSON 时：多环境用 <code>dimensions[{name,a,b,reason}]</code> + <code>preference</code>（A / B / same），单环境用 <code>dimensions[{name,score,reason}]</code>，可自动拆分数和统计胜率。页面与导出里的展示顺序由程序固定为「偏好 → 结论 → 问题 → 意图 → 维度明细」，与 JSON 字段顺序无关。</p>
+  <label class="f" for="sEval">对比评估 Prompt（多环境 A vs B，作为 system 发送；留空用默认）</label>
+  <p class="hint" style="margin:0 0 4px">只写评估角色、维度、标准和输出格式。问题、上文、各环境截图由程序放进 user 消息，多环境依次标为 A、B。输出 JSON 用 <code>dimensions[{name,a,b,reason}]</code> + <code>preference</code>（A / B / same），可自动拆分数和统计胜率。页面与导出里的展示顺序由程序固定为「偏好 → 结论 → 问题 → 意图 → 维度明细」，与 JSON 字段顺序无关。</p>
   <textarea id="sEval" rows="10"></textarea>
-  <div class="row"><button type="button" data-default="compare">填入默认（对比）</button><button type="button" data-default="single">填入默认（单环境）</button>
+  <div class="row"><button type="button" data-default="compare">填入默认</button>
     <label><input id="sCache" type="checkbox" /> 发送 cache_control 缓存标记（Claude 系，需网关透传）</label></div>
+  <label class="f" for="sSingle">单环境评估 Prompt（只看一个环境打分：单环境批次的评估，或多环境批次里的「单评 A / B」；留空用默认）</label>
+  <p class="hint" style="margin:0 0 4px">输出 JSON 用 <code>dimensions[{name,score,reason}]</code>，总分 = 各维度平均 × 2（10 分制）。</p>
+  <textarea id="sSingle" rows="8"></textarea>
+  <div class="row"><button type="button" data-default="single">填入默认</button></div>
   <label class="f" for="sSum">整体分析 Prompt</label>
   <textarea id="sSum" rows="5"></textarea>
   <div class="row"><button type="button" data-default="summary">填入默认</button></div>

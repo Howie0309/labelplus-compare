@@ -20,7 +20,7 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const CHROME = '/Applications/Google Chrome.app';
 
 // ---------- 配置 ----------
-const CONFIG_KEYS = ['baseUrl', 'model', 'judgePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries'];
+const CONFIG_KEYS = ['baseUrl', 'model', 'judgePrompt', 'singlePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries'];
 const DEFAULTS = { captureConcurrency: 3, captureRetries: 2, evalConcurrency: 3, evalRetries: 2 };
 
 function loadConfig() {
@@ -53,11 +53,12 @@ store.load();
 for (const b of store.all()) {
   let changed = false;
   for (const it of b.items) {
-    const e = it.eval;
-    if (e?.status !== 'done' || !e.raw || e.kind === 'raw') continue;
-    const names = (e.envs || b.envs.map((x) => x.id)).map((id) => b.envs.find((x) => x.id === id)?.name || String(id));
-    const text = normalizeEval(e.raw, names).text;
-    if (text !== e.text) (e.text = text), (changed = true);
+    const names = (e) => (e.envs || b.envs.map((x) => x.id)).map((id) => b.envs.find((x) => x.id === id)?.name || String(id));
+    for (const e of [it.eval, ...Object.values(it.envEvals || {})]) {
+      if (e?.status !== 'done' || !e.raw || e.kind === 'raw') continue;
+      const text = normalizeEval(e.raw, names(e)).text;
+      if (text !== e.text) (e.text = text), (changed = true);
+    }
   }
   if (changed) store.save(b);
 }
@@ -93,6 +94,7 @@ function counts(b) {
     else if (['queued', 'shooting'].includes(it.status)) c.queued++;
     else c.pending++;
     if (it.eval?.status === 'done') c.evaluated++;
+    if (Object.values(it.envEvals || {}).some((e) => e?.status === 'done')) c.envEvaluated = (c.envEvaluated || 0) + 1;
     if (it.manual?.pref || it.manual?.rating) c.rated++;
   }
   return c;
@@ -105,7 +107,7 @@ const brief = (b) => ({
 
 function tokenStats(b) {
   const s = { prompt: 0, cached: 0, completion: 0, calls: 0 };
-  for (const u of [...b.items.map((i) => i.eval), b.summary]) {
+  for (const u of [...b.items.flatMap((i) => [i.eval, ...Object.values(i.envEvals || {})]), b.summary]) {
     if (!u?.usage) continue;
     s.calls++;
     s.prompt += u.usage.prompt_tokens || u.usage.input_tokens || 0;
@@ -285,7 +287,11 @@ const routes = [
   }],
   ['POST', '/api/batches/:id/capture', ({ id, body }) => ({ queued: capture.enqueue(id, pickChats(mustBatch(id), body)) })],
   ['POST', '/api/batches/:id/capture/cancel', ({ id }) => (capture.cancel(id), { ok: true })],
-  ['POST', '/api/batches/:id/eval', ({ id, body }) => ({ queued: evaluate.enqueue(id, pickIds(mustBatch(id), body)) })],
+  ['POST', '/api/batches/:id/eval', ({ id, body }) => {
+    // envId 为空 = 多环境对比评估；给了 envId = 只评这个环境（单环境打分，结果另存，不覆盖对比评估）
+    const envId = body.envId == null || body.envId === '' ? null : Number(body.envId);
+    return { queued: evaluate.enqueue(id, pickIds(mustBatch(id), body), envId) };
+  }],
   ['POST', '/api/batches/:id/eval/cancel', ({ id }) => (evaluate.cancel(id), { ok: true })],
   ['POST', '/api/batches/:id/summary', async ({ id, body }) => ({ count: await evaluate.runSummary(id, pickIds(mustBatch(id), body)) })],
 ];
@@ -353,7 +359,7 @@ const server = http
       if (req.method === 'GET' && pathname === '/') return serveFile(res, path.join(ROOT, 'public', 'index.html'));
       if (req.method === 'GET' && pathname === '/app.js') return serveFile(res, path.join(ROOT, 'public', 'app.js'));
       if (req.method === 'GET' && pathname.startsWith('/batches/')) {
-        const abs = path.resolve(ROOT, '.' + decodeURIComponent(pathname));
+        const abs = path.resolve(store.BATCH_ROOT, '.' + decodeURIComponent(pathname).slice('/batches'.length));
         if (!abs.startsWith(store.BATCH_ROOT + path.sep) || abs.endsWith('.json')) return send(res, 403, { error: 'forbidden' });
         return serveFile(res, abs);
       }

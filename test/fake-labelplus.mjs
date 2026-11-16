@@ -29,6 +29,7 @@ const COMPARE = {
   dimensions: [{ name: '需求满足', a: 3, b: 5, reason: 'B 更完整' }, { name: '信息质量', a: 4, b: 4, reason: '相当' }],
   a_issues: ['信息少'], b_issues: [],
 };
+const SINGLE = { intent: '测试', summary: '还行', dimensions: [{ name: '需求满足', score: 4, reason: '完整' }, { name: '信息质量', score: 3, reason: '一般' }] };
 
 export function start(port = 0) {
   let vlmCalls = 0;
@@ -39,7 +40,9 @@ export function start(port = 0) {
     const json = (v) => (res.writeHead(200, { 'Content-Type': 'application/json' }), res.end(JSON.stringify(v)));
     if (url.pathname === '/v1/chat/completions') {
       vlmCalls++;
-      return json({ choices: [{ message: { content: '```json\n' + JSON.stringify(COMPARE) + '\n```' } }], usage: { prompt_tokens: 100, completion_tokens: 20 } });
+      // 单环境评估时 user 消息里写的是「回答（环境名）」，返回单环境打分结构
+      const out = body.includes('回答（') ? SINGLE : COMPARE;
+      return json({ choices: [{ message: { content: '```json\n' + JSON.stringify(out) + '\n```' } }], usage: { prompt_tokens: 100, completion_tokens: 20 } });
     }
     const authed = (req.headers.cookie || '').includes('session=ok');
     // 前端页面：未登录时模拟 UUAP 登录页，1 秒后「登录成功」写入持久 Cookie（模拟用户在窗口里完成登录）
