@@ -834,9 +834,12 @@ function renderViewer(force) {
       ${s?.text && s.status !== 'running' ? `<details data-sd="${e.id}" ${S.viewer.sd?.has(String(e.id)) ? 'open' : ''}><summary>查看单评详情</summary>${md(s.text)}</details>` : ''}</div>`;
   }).join('') : '';
   const m = it.manual || {};
+  const SUB = { '-1': '明显', '-0.5': '略好', 0: '持平', 0.5: '略好', 1: '明显' };
   const manual = multi()
-    ? GSB.map((g, i) => `<button type="button" data-gsb="${g}" aria-pressed="${m.gsb === g}" title="${esc(g === 0 ? '两者相当' : `${g < 0 ? envs[0]?.name : envs[1]?.name} ${Math.abs(g) === 1 ? '明显更好' : '略好'}`)}">${esc(gsbShort(g))}（${i + 1}）</button>`).join('')
-    : Object.entries(RT).map(([k, t], i) => `<button type="button" data-rating="${k}" aria-pressed="${m.rating === k}">${t}（${i + 1}）</button>`).join('');
+    ? `<div class="gsb-ends"><span class="a">← A ${esc(envs[0]?.name)} 更好</span><span class="b">B ${esc(envs[1]?.name)} 更好 →</span></div>
+      <div class="gsb" role="group" aria-label="人工打分">${GSB.map((g, i) => `<button type="button" data-gsb="${g}" class="${g < 0 ? 'A' : g > 0 ? 'B' : 'S'}" aria-pressed="${m.gsb === g}"
+        title="${esc(g === 0 ? '两者相当' : `${g < 0 ? envs[0]?.name : envs[1]?.name} ${Math.abs(g) === 1 ? '明显更好' : '略好'}`)}（快捷键 ${i + 1}）"><b>${fmtG(g)}</b><small>${SUB[g]}</small></button>`).join('')}</div>`
+    : `<div class="row rate" role="group" aria-label="人工评级">${Object.entries(RT).map(([k, t], i) => `<button type="button" data-rating="${k}" aria-pressed="${m.rating === k}">${t}（${i + 1}）</button>`).join('')}</div>`;
   $('vside').innerHTML = `
     <div class="row"><button type="button" id="vPrev">← 上一条</button><span class="hint">${pos}/${list.length}</span>
       <button type="button" id="vNext">下一条 →</button><span class="spacer"></span><button type="button" id="vClose">关闭</button></div>
@@ -852,8 +855,8 @@ function renderViewer(force) {
       <button type="button" id="vShoot" title="整段对话重截，会清空该对话各轮的评估与人工标注">重截这段对话</button>
       <button type="button" id="vEval" class="pri" ${it.status === 'done' ? '' : 'disabled'}>${multi() ? (ev?.text ? '重新对比评估（E）' : '对比评估（E）') : ev?.text ? '重新评估（E）' : '模型评估（E）'}</button></div>
 
-    <h4 style="margin:16px 0 6px">人工${multi() ? `偏好 <span class="hint" style="font-weight:400">B 相对 A 打分：负数 A 好，正数 B 好</span>` : '评级'}</h4>
-    <div class="row rate" role="group" aria-label="人工标注">${manual}</div>
+    <h4 style="margin:16px 0 6px">人工${multi() ? '偏好' : '评级'} <span class="hint" style="font-weight:400">快捷键 ${multi() ? '1–5' : '1–3'}</span></h4>
+    ${manual}
     <label class="f" for="vNote">备注</label>
     <textarea id="vNote" rows="3" placeholder="记录亮点、问题，失焦自动保存">${esc(m.note || '')}</textarea>
 
