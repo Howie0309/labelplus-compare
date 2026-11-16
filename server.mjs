@@ -10,7 +10,7 @@ import * as store from './lib/store.mjs';
 import * as capture from './lib/capture.mjs';
 import * as evaluate from './lib/evaluate.mjs';
 import { exportBatch, exportJsonl } from './lib/excel.mjs';
-import { DEFAULT_COMPARE_PROMPT, DEFAULT_SINGLE_PROMPT, DEFAULT_SUMMARY_PROMPT, chat } from './lib/vlm.mjs';
+import { DEFAULT_COMPARE_PROMPT, DEFAULT_SINGLE_PROMPT, DEFAULT_SUMMARY_PROMPT, chat, normalizeEval } from './lib/vlm.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3230);
@@ -49,6 +49,18 @@ function publicConfig(cfg) {
 }
 
 store.load();
+// 已有评估按当前展示顺序（结论前置）重新排版；只改展示文本，不重新调用模型
+for (const b of store.all()) {
+  let changed = false;
+  for (const it of b.items) {
+    const e = it.eval;
+    if (e?.status !== 'done' || !e.raw || e.kind === 'raw') continue;
+    const names = (e.envs || b.envs.map((x) => x.id)).map((id) => b.envs.find((x) => x.id === id)?.name || String(id));
+    const text = normalizeEval(e.raw, names).text;
+    if (text !== e.text) (e.text = text), (changed = true);
+  }
+  if (changed) store.save(b);
+}
 evaluate.init(loadConfig);
 
 // ---------- Cookie：手动粘贴，或用专用 Chrome 登录后自动读取 / 过期自动续期 ----------
