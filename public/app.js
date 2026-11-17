@@ -113,6 +113,12 @@ function modelScore(it, k) {
   const j = ev.envs ? ev.envs.indexOf(S.cur.envs[k].id) : k;
   return j >= 0 ? ev.scores[L[j]] ?? null : null;
 }
+// 模型给的五档 GSB（B 相对 A）；只有评估时正好是批次的 A、B 两个环境才有意义
+function modelGsb(it) {
+  const ev = it.eval;
+  if (ev?.status !== 'done' || typeof ev.gsb !== 'number') return null;
+  return !ev.envs || (ev.envs[0] === S.cur.envs[0]?.id && ev.envs[1] === S.cur.envs[1]?.id) ? ev.gsb : null;
+}
 
 // ---------- 顶栏状态 ----------
 async function refreshStatus() {
@@ -211,6 +217,12 @@ async function openSettings() {
   $('sCRetry').value = c.captureRetries;
   $('sConc').value = c.evalConcurrency;
   $('sEvalRetry').value = c.evalRetries;
+  $('fGsb').value = c.field_gsb;
+  $('fPref').value = c.field_preference;
+  $('fSum').value = c.field_summary;
+  $('fDims').value = c.field_dimensions;
+  $('fLabels').value = c.fieldLabels;
+  $('fLabelsDefault').textContent = `内置显示名：${c.defaultLabels.split('\n').join('，')}（在上面写同名字段可覆盖）`;
   $('sMsg').textContent = '';
   renderShare(await api('GET', '/api/share').catch(() => ({ enabled: false, urls: [], online: [] })));
   $('dlgSettings').showModal();
@@ -221,6 +233,8 @@ async function saveSettings() {
     judgePrompt: $('sEval').value, singlePrompt: $('sSingle').value, summaryPrompt: $('sSum').value, cacheControl: $('sCache').checked,
     captureConcurrency: Number($('sCConc').value), captureRetries: Number($('sCRetry').value),
     evalConcurrency: Number($('sConc').value), evalRetries: Number($('sEvalRetry').value),
+    field_gsb: $('fGsb').value, field_preference: $('fPref').value, field_summary: $('fSum').value, field_dimensions: $('fDims').value,
+    fieldLabels: $('fLabels').value,
   });
 }
 $('btnSettings').onclick = openSettings;
@@ -253,7 +267,8 @@ $('sSave').onclick = async () => {
   try {
     await saveSettings();
     $('dlgSettings').close();
-    toast('设置已保存');
+    toast(S.cfg.rerendered ? `设置已保存，已按新字段设置重新排版 ${S.cfg.rerendered} 条评估` : '设置已保存');
+    if (S.cfg.rerendered) refresh();
   } catch (e) {
     $('sMsg').innerHTML = `<span class="err">${esc(e.message)}</span>`;
   }
@@ -507,6 +522,10 @@ function filterDefs() {
     }
     for (const g of GSB) defs[`g:${g}`] = [`人工：${gsbShort(g)}`, (i) => i.manual?.gsb === g];
     defs.conflict = ['人工与模型方向不一致', (i) => i.manual?.pref && modelPref(i) && i.manual.pref !== modelPref(i)];
+    if (S.cur.items.some((i) => modelGsb(i) !== null)) {
+      for (const g of GSB) defs[`mg:${g}`] = [`模型：${gsbShort(g)}`, (i) => modelGsb(i) === g];
+      defs.gsbDiff = ['人工与模型分档不一致', (i) => typeof i.manual?.gsb === 'number' && modelGsb(i) !== null && i.manual.gsb !== modelGsb(i)];
+    }
   } else {
     for (const [k, t] of Object.entries(RT)) defs[`r:${k}`] = [`人工评${t}`, (i) => i.manual?.rating === k];
   }
@@ -639,9 +658,10 @@ function prefStats(b) {
     const s = b.items.map((i) => modelScore(i, k)).filter((x) => typeof x === 'number');
     return s.length ? `${L[k]} <b class="score">${(s.reduce((a, x) => a + x, 0) / s.length).toFixed(1)}</b>` : '';
   }).filter(Boolean).join(' / ');
-  const gs = b.items.map((i) => i.manual?.gsb).filter((g) => typeof g === 'number');
-  const gAvg = gs.length ? `<span title="B 相对 A，-1~1">人工均分 <b class="score">${fmtG(Math.round((gs.reduce((a, x) => a + x, 0) / gs.length) * 100) / 100)}</b>（${gs.length} 条）</span>` : '';
-  return `${line('模型', modelPref)}${line('人工', (i) => i.manual?.pref)}${gAvg}${avg ? `<span>平均总分 ${avg}</span>` : ''}${singleAvg(b)}`;
+  const gAvgOf = (label, list) => list.length ? `<span title="B 相对 A，-1~1">${label}均分 <b class="score">${fmtG(Math.round((list.reduce((a, x) => a + x, 0) / list.length) * 100) / 100)}</b>（${list.length} 条）</span>` : '';
+  const gAvg = gAvgOf('人工', b.items.map((i) => i.manual?.gsb).filter((g) => typeof g === 'number'));
+  const mAvg = gAvgOf('模型', b.items.map(modelGsb).filter((g) => g !== null));
+  return `${line('模型', modelPref)}${line('人工', (i) => i.manual?.pref)}${mAvg}${gAvg}${avg ? `<span>平均总分 ${avg}</span>` : ''}${singleAvg(b)}`;
 }
 
 function singleAvg(b) {
@@ -760,7 +780,7 @@ function renderGrid() {
               <div class="hint">chat ${it.chatId}${it.turn > 1 || it.context?.length ? ` · 第 ${it.turn} 轮` : ''}</div>
               <div class="row" style="gap:4px;margin-top:4px">
                 <span class="badge ${it.status}">${ST[it.status]}${it.status === 'shooting' ? '…' : ''}</span>${ev}
-                ${mp ? `<span class="tag">模型 ${prefLabel(mp)}</span>` : ''}
+                ${modelGsb(it) !== null ? `<span class="tag">模型 ${gsbTag(modelGsb(it))}</span>` : mp ? `<span class="tag">模型 ${prefLabel(mp)}</span>` : ''}
                 ${scores.length ? `<span class="score">${scores.join(' : ')}</span>` : ''}
                 ${envs.length > 1 ? envs.map((e, k) => { const s = it.envEvals?.[e.id]; return s?.status === 'done' && typeof s.score === 'number' ? `<span class="tag" title="单环境评估">单评 ${L[k]} <b class="score">${s.score}</b></span>` : s?.status === 'failed' ? `<span class="tag err">单评 ${L[k]} 失败</span>` : ['queued', 'running'].includes(s?.status) ? `<span class="tag">单评 ${L[k]}…</span>` : ''; }).join('') : ''}
                 ${typeof it.manual?.gsb === 'number' ? `<span class="tag">人工 ${gsbTag(it.manual.gsb)}</span>` : it.manual?.pref ? `<span class="tag">人工 ${prefLabel(it.manual.pref)}</span>` : ''}
@@ -921,7 +941,7 @@ function renderViewer(force) {
     const u = ev.usage;
     const usage = u ? ` · 输入 ${u.prompt_tokens || u.input_tokens || 0} tokens，缓存命中 ${ev.cachedTokens || 0}` : '';
     const sc = envs.map((e, k) => [k, modelScore(it, k)]).filter(([, x]) => typeof x === 'number');
-    const head = [modelPref(it) ? `偏好 ${prefLabel(modelPref(it))}` : '', sc.length ? `总分 ${sc.map(([k, x]) => `${envs.length > 1 ? `${L[k]} ` : ''}<b class="score">${x}</b>`).join(' / ')}` : ''].filter(Boolean).join(' · ');
+    const head = [modelGsb(it) !== null ? `模型 ${gsbTag(modelGsb(it))}` : modelPref(it) ? `偏好 ${prefLabel(modelPref(it))}` : '', sc.length ? `总分 ${sc.map(([k, x]) => `${envs.length > 1 ? `${L[k]} ` : ''}<b class="score">${x}</b>`).join(' / ')}` : ''].filter(Boolean).join(' · ');
     evalHtml += `<p class="hint">${head ? `${head} · ` : ''}${esc(ev.model || '')} · ${ev.at ? new Date(ev.at).toLocaleString('zh-CN') : ''}${took(ev)}${usage}</p>${md(ev.text)}`;
   }
   if (!evalHtml) evalHtml = '<p class="hint">尚未进行模型评估。</p>';

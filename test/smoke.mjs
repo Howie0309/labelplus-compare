@@ -88,7 +88,21 @@ try {
   const ev = await until(async () => (await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id).eval?.status === 'done' &&
     (await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id).eval, 20000, '评估完成');
   assert.equal(ev.pref, 'B');
-  assert.deepEqual(ev.scores, { A: 7, B: 9 });
+  // 对比评估以模型给的 GSB 为准，不再自动算总分；展示时偏好、结论在前，其余字段（含自定义字段）按模型输出顺序
+  assert.equal(ev.gsb, 0.5);
+  assert.equal(ev.scores, null);
+  assert.match(ev.text, /^\*\*偏好\*\*：\+0\.5，B（策略-genui-联调）略好\n\n\*\*结论\*\*：B 更好/);
+  assert.ok(ev.text.indexOf('risk_note') > ev.text.indexOf('意图') && ev.text.indexOf('risk_note') < ev.text.indexOf('维度明细'));
+  // 改字段映射 / 显示名：已有评估立即按新设置重新排版，不重新调用模型
+  const calls = lp.calls();
+  const re = await json('POST', '/api/config', { field_gsb: 'my_gsb', fieldLabels: 'risk_note=风险提示' });
+  assert.ok(re.rerendered >= 1);
+  const ev2 = (await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id).eval;
+  assert.deepEqual([ev2.gsb, ev2.pref], [null, 'B']); // gsb 字段对不上时退回 preference
+  assert.match(ev2.text, /\*\*风险提示\*\*：无明显风险/);
+  await json('POST', '/api/config', { field_gsb: '', fieldLabels: '' });
+  assert.equal((await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id).eval.gsb, 0.5);
+  assert.equal(lp.calls(), calls);
   await call('PATCH', `/api/batches/${batchId}/items/${second.id}`, { manual: { gsb: 0.5, note: 'smoke' } });
   await call('PATCH', `/api/batches/${batchId}/items/${b.items[0].id}`, { manual: { gsb: 0.3 } }); // 不在五档里的值视为清空
 

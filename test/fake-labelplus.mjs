@@ -24,10 +24,11 @@ function page(env, chat) {
     <div style="position:fixed;bottom:0;left:0;right:0;height:60px;background:#000">输入栏</div></body></html>`;
 }
 
+// 含一个 Prompt 里自定义的字段（risk_note），验证页面按模型输出原样展示
 const COMPARE = {
-  intent: '测试', preference: 'B', summary: 'B 更好',
+  intent: '测试', risk_note: '无明显风险',
   dimensions: [{ name: '需求满足', a: 3, b: 5, reason: 'B 更完整' }, { name: '信息质量', a: 4, b: 4, reason: '相当' }],
-  a_issues: ['信息少'], b_issues: [],
+  a_issues: ['信息少'], b_issues: [], summary: 'B 更好', gsb: 0.5, preference: 'B',
 };
 const SINGLE = { intent: '测试', summary: '还行', dimensions: [{ name: '需求满足', score: 4, reason: '完整' }, { name: '信息质量', score: 3, reason: '一般' }] };
 

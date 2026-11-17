@@ -205,6 +205,17 @@
   <label class="f" for="sSum">整体分析 Prompt</label>
   <textarea id="sSum" rows="5"></textarea>
   <div class="row"><button type="button" data-default="summary">填入默认</button></div>
+  <h3 style="font-size:14px;margin:16px 0 0">评估结果字段</h3>
+  <p class="hint" style="margin:4px 0 0">页面按模型输出的 JSON 原样展示（字段顺序跟 Prompt 走，不用改工具）。下面几个字段参与统计、筛选和导出，填 Prompt 里对应的字段名；留空用默认。改完保存后，已有评估会按新设置重新排版，不会重新调用模型。</p>
+  <div style="display:grid;grid-template-columns:auto 1fr auto 1fr;gap:6px 10px;align-items:center;margin-top:8px">
+    <label for="fGsb" class="hint">GSB 分数（-1~1）</label><input id="fGsb" type="text" placeholder="gsb" />
+    <label for="fPref" class="hint">偏好（A / B / same）</label><input id="fPref" type="text" placeholder="preference" />
+    <label for="fSum" class="hint">结论</label><input id="fSum" type="text" placeholder="summary" />
+    <label for="fDims" class="hint">维度打分（数组）</label><input id="fDims" type="text" placeholder="dimensions" />
+  </div>
+  <label class="f" for="fLabels">字段显示名（每行「字段名=显示名」，没写的直接显示字段名）</label>
+  <textarea id="fLabels" rows="4" placeholder="例如：&#10;intent=意图&#10;a_issues=A 的问题"></textarea>
+  <p class="hint" style="margin:2px 0 0" id="fLabelsDefault"></p>
   <h3 style="font-size:14px;margin:16px 0 0">多人协作（局域网）</h3>
   <div class="row" style="margin-top:8px">
     <label><input id="shOn" type="checkbox" /> 开启：同事在同一内网用浏览器打开分享链接，一起标注</label>

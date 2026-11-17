@@ -12,7 +12,7 @@ import { GSB, gsbPref } from './lib/store.mjs';
 import * as capture from './lib/capture.mjs';
 import * as evaluate from './lib/evaluate.mjs';
 import { exportBatch, exportJsonl } from './lib/excel.mjs';
-import { DEFAULT_COMPARE_PROMPT, DEFAULT_SINGLE_PROMPT, DEFAULT_SUMMARY_PROMPT, chat, normalizeEval } from './lib/vlm.mjs';
+import { DEFAULT_COMPARE_PROMPT, DEFAULT_SINGLE_PROMPT, DEFAULT_SUMMARY_PROMPT, DEFAULT_FIELDS, DEFAULT_LABELS, chat, fieldsOf, normalizeEval } from './lib/vlm.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3230);
@@ -22,7 +22,9 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const CHROME = '/Applications/Google Chrome.app';
 
 // ---------- 配置 ----------
-const CONFIG_KEYS = ['baseUrl', 'model', 'judgePrompt', 'singlePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries'];
+const CONFIG_KEYS = ['baseUrl', 'model', 'judgePrompt', 'singlePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries',
+  'field_gsb', 'field_preference', 'field_summary', 'field_dimensions', 'fieldLabels'];
+const FIELD_KEYS = CONFIG_KEYS.filter((k) => k.startsWith('field'));
 const DEFAULTS = { captureConcurrency: 3, captureRetries: 2, evalConcurrency: 3, evalRetries: 2 };
 
 function loadConfig() {
@@ -42,6 +44,8 @@ function publicConfig(cfg) {
     defaultComparePrompt: DEFAULT_COMPARE_PROMPT,
     defaultSinglePrompt: DEFAULT_SINGLE_PROMPT,
     defaultSummaryPrompt: DEFAULT_SUMMARY_PROMPT,
+    defaultFields: DEFAULT_FIELDS,
+    defaultLabels: DEFAULT_LABELS,
     hasKey: !!cfg.apiKey,
     keyMask: mask(cfg.apiKey),
     hasCookie: !!cfg.cookie,
@@ -51,19 +55,30 @@ function publicConfig(cfg) {
 }
 
 store.load();
-// 已有评估按当前展示顺序（结论前置）重新排版；只改展示文本，不重新调用模型
-for (const b of store.all()) {
-  let changed = false;
-  for (const it of b.items) {
+// 已有评估按当前的字段映射与显示名重新解析、排版；只用保存的模型原文，不重新调用模型。启动时和改了字段设置后各跑一次
+function rerenderEvals() {
+  const fields = fieldsOf(loadConfig());
+  let n = 0;
+  for (const b of store.all()) {
+    let changed = false;
     const names = (e) => (e.envs || b.envs.map((x) => x.id)).map((id) => b.envs.find((x) => x.id === id)?.name || String(id));
-    for (const e of [it.eval, ...Object.values(it.envEvals || {})]) {
-      if (e?.status !== 'done' || !e.raw || e.kind === 'raw') continue;
-      const text = normalizeEval(e.raw, names(e)).text;
-      if (text !== e.text) (e.text = text), (changed = true);
+    for (const it of b.items) {
+      for (const e of [it.eval, ...Object.values(it.envEvals || {})]) {
+        if (e?.status !== 'done' || !e.raw) continue;
+        const r = normalizeEval(e.raw, names(e), fields);
+        const next = { kind: r.kind, text: r.text, dims: r.dims, scores: r.scores, pref: r.pref, gsb: r.gsb, score: r.score };
+        if (Object.entries(next).some(([k, v]) => JSON.stringify(v ?? null) !== JSON.stringify(e[k] ?? null))) {
+          Object.assign(e, next);
+          changed = true;
+          n++;
+        }
+      }
     }
+    if (changed) store.save(b);
   }
-  if (changed) store.save(b);
+  return n;
 }
+rerenderEvals();
 evaluate.init(loadConfig);
 
 // ---------- Cookie：手动粘贴，或用专用 Chrome 登录后自动读取 / 过期自动续期 ----------
@@ -168,6 +183,7 @@ const routes = [
   ['GET', '/api/config', () => publicConfig(loadConfig())],
   ['POST', '/api/config', ({ body }) => {
     const cfg = loadConfig();
+    const fieldsBefore = JSON.stringify(FIELD_KEYS.map((k) => cfg[k] ?? ''));
     for (const k of CONFIG_KEYS) if (k in body) cfg[k] = typeof body[k] === 'string' ? body[k].trim() : body[k];
     const num = (v, lo, hi, d) => Math.min(hi, Math.max(lo, Number.isFinite(Number(v)) && v !== '' ? Math.round(Number(v)) : d));
     cfg.captureConcurrency = num(cfg.captureConcurrency, 1, 6, DEFAULTS.captureConcurrency);
@@ -177,7 +193,9 @@ const routes = [
     cfg.cacheControl = !!cfg.cacheControl;
     if (body.apiKey) cfg.apiKey = body.apiKey.trim(); // 留空表示保留原 Key
     writeConfig(cfg);
-    return publicConfig(cfg);
+    // 字段映射或显示名改了：已有评估按新设置重新排版
+    const rerendered = fieldsBefore !== JSON.stringify(FIELD_KEYS.map((k) => cfg[k] ?? '')) ? rerenderEvals() : 0;
+    return { ...publicConfig(cfg), rerendered };
   }],
   ['POST', '/api/config/test', async () => {
     const { text } = await chat(loadConfig(), [{ role: 'user', content: '请只回复：ok' }]);
