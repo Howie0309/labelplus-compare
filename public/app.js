@@ -384,7 +384,8 @@ async function loop() {
   const b = S.cur;
   const busy =
     s?.capture.running || s?.login?.status === 'waiting' ||
-    (b && (b.enum.status === 'running' || b.counts.queued || b.evalPending || b.items.some((i) => ['running', 'queued'].includes(i.eval?.status)) || b.summary?.status === 'running'));
+    (b && (b.enum.status === 'running' || b.counts.queued || b.evalPending || b.summary?.status === 'running' ||
+      b.items.some((i) => [i.eval, ...Object.values(i.envEvals || {})].some((e) => ['running', 'queued'].includes(e?.status)))));
   if (busy) await refresh().catch(() => {});
   setTimeout(loop, busy ? 2000 : 8000);
 }
@@ -802,6 +803,10 @@ async function setManual(k, v) {
   renderViewer(false);
   await api('PATCH', `/api/batches/${bid()}/items/${it.id}`, { manual: { [k]: val } }).catch((e) => toast(e.message, true));
 }
+// 评估进行中显示已等待时长；完成后显示耗时（模型要读图并写较长的理由，单条通常 30–90 秒）
+const waitText = (e) => e.status === 'queued' ? '评估排队中…' : `评估中… 已 ${e.startedAt ? Math.max(0, Math.round((Date.now() - new Date(e.startedAt)) / 1000)) : '?'} 秒（读图并写理由，通常 30–90 秒）`;
+const took = (e) => (e?.durationMs ? ` · 耗时 ${Math.round(e.durationMs / 1000)} 秒` : '');
+
 function renderViewer(force) {
   const it = curItem();
   if (!it) return closeViewer();
@@ -812,26 +817,30 @@ function renderViewer(force) {
   const ev = it.eval;
   const envs = S.cur.envs;
   let evalHtml = '';
-  if (ev?.status === 'queued' || ev?.status === 'running') evalHtml = `<p>${EV[ev.status]}…${ev.error ? `<br><span class="hint warn">${esc(ev.error)}</span>` : ''}</p>`;
+  if (ev?.status === 'queued' || ev?.status === 'running') evalHtml = `<p>${waitText(ev)}${ev.error ? `<br><span class="hint warn">${esc(ev.error)}</span>` : ''}</p>`;
   else if (ev?.status === 'failed') evalHtml = `<p class="err">评估失败：${esc(ev.error)}</p>`;
   if (ev?.text && ev.status !== 'running') {
     const u = ev.usage;
     const usage = u ? ` · 输入 ${u.prompt_tokens || u.input_tokens || 0} tokens，缓存命中 ${ev.cachedTokens || 0}` : '';
     const sc = envs.map((e, k) => [k, modelScore(it, k)]).filter(([, x]) => typeof x === 'number');
     const head = [modelPref(it) ? `偏好 ${prefLabel(modelPref(it))}` : '', sc.length ? `总分 ${sc.map(([k, x]) => `${envs.length > 1 ? `${L[k]} ` : ''}<b class="score">${x}</b>`).join(' / ')}` : ''].filter(Boolean).join(' · ');
-    evalHtml += `<p class="hint">${head ? `${head} · ` : ''}${esc(ev.model || '')} · ${ev.at ? new Date(ev.at).toLocaleString('zh-CN') : ''}${usage}</p>${md(ev.text)}`;
+    evalHtml += `<p class="hint">${head ? `${head} · ` : ''}${esc(ev.model || '')} · ${ev.at ? new Date(ev.at).toLocaleString('zh-CN') : ''}${took(ev)}${usage}</p>${md(ev.text)}`;
   }
   if (!evalHtml) evalHtml = '<p class="hint">尚未进行模型评估。</p>';
-  // 多环境批次：每个环境还可以单独打分（不和另一个环境比较），结果与对比评估分开保存
+  // 多环境批次：每个环境还可以单独打分（不和另一个环境比较），结果与对比评估分开保存。结论直接显示，明细折叠
   const singleHtml = multi() ? envs.map((e, k) => {
     const s = it.envEvals?.[e.id];
     const busy = ['queued', 'running'].includes(s?.status);
-    const head = s?.status === 'done' ? `${typeof s.score === 'number' ? `总分 <b class="score">${s.score}</b>/10 · ` : ''}${esc(s.model || '')} · ${s.at ? new Date(s.at).toLocaleString('zh-CN') : ''}`
-      : busy ? `${EV[s.status]}…${s.error ? ` <span class="warn">${esc(s.error)}</span>` : ''}` : s?.status === 'failed' ? `<span class="err">评估失败：${esc(s.error)}</span>` : '未评估';
+    const head = s?.status === 'done' ? `${typeof s.score === 'number' ? `总分 <b class="score">${s.score}</b>/10 · ` : ''}${esc(s.model || '')} · ${s.at ? new Date(s.at).toLocaleString('zh-CN') : ''}${took(s)}`
+      : busy ? `${waitText(s)}${s.error ? ` <span class="warn">${esc(s.error)}</span>` : ''}` : s?.status === 'failed' ? `<span class="err">评估失败：${esc(s.error)}</span>` : '未评估';
+    const [lead, ...rest] = String(s?.text || '').split(/\n\n/);
+    const showLead = s?.text && s.status !== 'running' && /^\*\*结论\*\*/.test(lead);
+    const detail = showLead ? rest.join('\n\n') : s?.text;
     return `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
       <div class="row">${envTag(k, e.name)}<span class="hint">${head}</span><span class="spacer"></span>
         <button type="button" class="sm" data-single="${e.id}" ${it.images[e.id] && !busy ? '' : 'disabled'}>${s?.text ? '重新单评' : '单独评估'}</button></div>
-      ${s?.text && s.status !== 'running' ? `<details data-sd="${e.id}" ${S.viewer.sd?.has(String(e.id)) ? 'open' : ''}><summary>查看单评详情</summary>${md(s.text)}</details>` : ''}</div>`;
+      ${showLead ? md(lead) : ''}
+      ${detail && s.status !== 'running' ? `<details data-sd="${e.id}" ${S.viewer.sd?.has(String(e.id)) ? 'open' : ''}><summary>${showLead ? '问题与维度明细' : '查看单评详情'}</summary>${md(detail)}</details>` : ''}</div>`;
   }).join('') : '';
   const m = it.manual || {};
   const SUB = { '-1': '明显', '-0.5': '略好', 0: '持平', 0.5: '略好', 1: '明显' };
