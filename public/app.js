@@ -24,6 +24,7 @@ const S = {
   viewer: { open: false, id: null, mode: localStorage.getItem('lpViewMode') || 'split', zoom: 'fit', scale: 1 },
   cfg: null,
   me: localStorage.getItem('lpName') || '', // 标注人名字，多人协作时记录谁改的
+  evalN: Math.max(1, Number(localStorage.getItem('lpEvalN')) || 100), // 「只评前 N 条」的 N
   role: 'owner', // owner=发起人（本机）；guest=通过分享链接进来的同事
   share: { enabled: false, online: [] },
   manualSince: '',
@@ -765,6 +766,8 @@ function renderTools() {
     <div class="grp owner-only"><span>模型评估</span>${modeSel}
       <button type="button" data-a="evalSel" ${n ? '' : 'disabled'}>评估选中（${n}）</button>
       <button type="button" data-a="evalRest" class="pri" ${unevaluated ? '' : 'disabled'}>批量评估待评估（${unevaluated}）</button>
+      <span class="hint">或只评前</span><input id="evN" type="number" min="1" value="${S.evalN}" style="width:72px" aria-label="只评估前几条" />
+      <button type="button" data-a="evalFirst" ${unevaluated ? '' : 'disabled'}>条待评估</button>
       <button type="button" data-a="cancelEval" ${evalBusy ? '' : 'disabled'}>取消评估</button></div>
     <div class="grp"><span>分析 / 导出</span>
       <button type="button" class="owner-only" data-a="summary" ${b.summary?.status === 'running' ? 'disabled' : ''}>整体分析（${n ? `选中 ${n}` : '全部'}）</button>
@@ -776,6 +779,11 @@ function renderTools() {
   if ($('evMode')) $('evMode').onchange = (e) => {
     S.evalMode = e.target.value;
     localStorage.setItem('lpEvalMode', S.evalMode);
+    renderTools();
+  };
+  if ($('evN')) $('evN').onchange = (e) => {
+    S.evalN = Math.max(1, Math.round(Number(e.target.value) || 100));
+    localStorage.setItem('lpEvalN', String(S.evalN));
     renderTools();
   };
 }
@@ -807,6 +815,14 @@ function runAction(a) {
     cancelShoot: () => act(() => api('POST', `${p}/capture/cancel`), '已取消排队'),
     evalSel: () => act(() => api('POST', `${p}/eval`, { ids, envId: modeEnv() }), (r) => `已提交${modeLabel()} ${r.queued} 条（仅截图成功的会评估）`),
     evalRest: () => act(() => api('POST', `${p}/eval`, { ids: S.cur.items.filter((i) => needsEval(i, evalMode())).map((i) => i.id), envId: modeEnv() }), (r) => `已提交${modeLabel()} ${r.queued} 条`),
+    // 只评前 N 条待评估：按评估顺序（从上到下）取，跳过已有结果的
+    evalFirst: () => {
+      const mode = evalMode();
+      const targets = S.cur.items.filter((i) => needsEval(i, mode)).sort((a, b) => (a.pos ?? 0) - (b.pos ?? 0) || a.turn - b.turn).slice(0, S.evalN);
+      if (!targets.length) return toast('没有待评估的条目');
+      return act(() => api('POST', `${p}/eval`, { ids: targets.map((i) => i.id), envId: modeEnv() }),
+        (r) => `已提交${modeLabel()} ${r.queued} 条（按顺序取前 ${S.evalN} 条待评估的）`);
+    },
     cancelEval: () => act(() => api('POST', `${p}/eval/cancel`), '已取消排队中的评估'),
     summary: () => act(async () => {
       const r = await api('POST', `${p}/summary`, ids.length ? { ids } : { scope: 'all' });
