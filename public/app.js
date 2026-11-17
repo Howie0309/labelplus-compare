@@ -126,7 +126,6 @@ async function refreshStatus() {
   if (!s) return;
   S.role = s.role || 'owner';
   S.share = s.share || { enabled: false, online: [] };
-  S.display = s.display || S.display;
   document.body.classList.toggle('guest', S.role === 'guest');
   renderPresence();
   if (S.role === 'guest') {
@@ -993,109 +992,6 @@ async function setManual(k, v) {
 const waitText = (e) => e.status === 'queued' ? '评估排队中…' : `评估中… 已 ${e.startedAt ? Math.max(0, Math.round((Date.now() - new Date(e.startedAt)) / 1000)) : '?'} 秒（读图并写理由，通常 30–90 秒）`;
 const took = (e) => (e?.durationMs ? ` · 耗时 ${Math.round(e.durationMs / 1000)} 秒` : '');
 
-// ---------- 评估结果分块显示：偏好、各字段、元信息可分别隐藏（「显示设置」弹窗） ----------
-function hiddenSet() {
-  try {
-    return new Set(JSON.parse(localStorage.getItem('lpHide') || '[]'));
-  } catch {
-    return new Set();
-  }
-}
-function setHide(key, hide) {
-  const s = hiddenSet();
-  hide ? s.add(key) : s.delete(key);
-  localStorage.setItem('lpHide', JSON.stringify([...s]));
-}
-const sc = (x) => (x === null || x === undefined ? '-' : typeof x === 'object' ? JSON.stringify(x) : String(x));
-// 与后端相同的通用渲染：文字→段落，字符串数组→列表，对象数组→表格，对象→键值列表
-function mdValue(label, v, colName) {
-  if (Array.isArray(v)) {
-    if (!v.length) return `**${label}**：无`;
-    if (v.every((x) => x && typeof x === 'object' && !Array.isArray(x))) {
-      const cols = [...new Set(v.flatMap((o) => Object.keys(o)))];
-      const row = (o) => `| ${cols.map((c) => esc(sc(o[c])).replace(/\|/g, '/')).join(' | ')} |`;
-      return [`**${label}**`, `| ${cols.map((c) => esc(colName(c))).join(' | ')} |`, `|${cols.map(() => '---|').join('')}`, ...v.map(row)].join('\n');
-    }
-    return [`**${label}**`, ...v.map((x) => `- ${sc(x)}`)].join('\n');
-  }
-  if (v && typeof v === 'object') return [`**${label}**`, ...Object.entries(v).map(([k, x]) => `- ${colName(k)}：${sc(x)}`)].join('\n');
-  return `**${label}**：${sc(v)}`;
-}
-
-// 返回 { head, meta, blocks:[{key,label,md}] }；key 用来记显示 / 隐藏
-function evalBlocks(ev, envs, prefix = 'c') {
-  const d = S.display || { map: {}, labels: {} };
-  const labels = d.labels || {};
-  const map = d.map || {};
-  const evEnvs = (ev?.envs || envs.map((e) => e.id)).map((id) => envs.find((e) => e.id === id)).filter(Boolean);
-  const letters = L.slice(0, evEnvs.length);
-  const colName = (c) => {
-    const l = letters.find((x) => x.toLowerCase() === String(c).toLowerCase());
-    return l && evEnvs.length > 1 ? `${l} ${evEnvs[letters.indexOf(l)]?.name || ''}` : labels[c] || c;
-  };
-  let head = '';
-  if (evEnvs.length > 1 && (typeof ev?.gsb === 'number' || ev?.pref)) {
-    const dir = ev.pref === 'same' ? '持平' : ev.pref ? `${ev.pref}（${evEnvs[L.indexOf(ev.pref)]?.name || ''}）${typeof ev.gsb !== 'number' ? '更好' : Math.abs(ev.gsb) === 1 ? '明显更好' : '略好'}` : '';
-    head = `**偏好**：${typeof ev?.gsb === 'number' ? `${ev.gsb > 0 ? '+' : ''}${ev.gsb}，` : ''}${dir}`;
-  }
-  const meta = [ev?.model, ev?.effort && ev.effort !== 'auto' ? `思考 ${ev.effort}` : '', ev?.at ? new Date(ev.at).toLocaleString('zh-CN') : '', typeof ev?.durationMs === 'number' ? `耗时 ${Math.round(ev.durationMs / 1000)} 秒` : '', ev?.usage ? `输入 ${ev.usage.prompt_tokens || ev.usage.input_tokens || 0} tokens，缓存命中 ${ev.cachedTokens || 0}` : ''].filter(Boolean).join(' · ');
-  const key = (k) => `${prefix}:${k}`;
-  const blocks = [];
-  const data = ev?.data;
-  if (!data) {
-    if (ev?.text) blocks.push({ key: key('@text'), label: '全文', md: ev.text });
-    return { head, meta, blocks, key };
-  }
-  const skip = new Set([map.gsb, map.preference]);
-  for (const [k, v] of Object.entries(data)) {
-    if (skip.has(k)) continue;
-    const m = String(k).match(/^([a-d])_(.+)$/i);
-    const l = labels[k] || (evEnvs.length > 1 && m && letters.includes(m[1].toUpperCase()) ? `${m[1].toUpperCase()}（${evEnvs[letters.indexOf(m[1].toUpperCase())]?.name || ''}）${labels[m[2]] || m[2]}` : k);
-    blocks.push({ key: key(k), label: l, md: mdValue(l, v, colName) });
-  }
-  return { head, meta, blocks, key };
-}
-
-function evalBlocksHtml(ev, envs, it, prefix = 'c') {
-  const b = evalBlocks(ev, envs, prefix);
-  const hide = hiddenSet();
-  const k = (x) => b.key(x);
-  const out = [];
-  // 顶部一行：模型 GSB / 偏好，保留原来的标签样式
-  const mg = prefix === 'c' ? modelGsb(it) : null;
-  const head = mg !== null ? `模型 ${gsbTag(mg)}` : b.head ? md(b.head).replace(/^<div class="md"><p>|<\/p><\/div>$/g, '') : '';
-  if (head && !hide.has(k('@head'))) out.push(`<p class="hint">${head}</p>`);
-  for (const x of b.blocks) {
-    if (hide.has(x.key)) continue;
-    // 只显示结论时保持原样；其余字段折叠，避免一屏全是字
-    out.push(x.label === '结论' || x.label === '全文' ? md(x.md) : `<details><summary>${esc(x.label)}</summary>${md(x.md)}</details>`);
-  }
-  if (b.meta && !hide.has(k('@meta'))) out.push(`<p class="hint" style="margin:6px 0 0">${esc(b.meta)}</p>`);
-  if (!out.length && !hide.has(k('@all'))) out.push('<p class="hint">已按显示设置隐藏了全部字段</p>');
-  return out.join('');
-}
-
-function openShowDialog() {
-  const it = curItem();
-  if (!it) return;
-  const keys = new Map([['c:@head', '偏好（GSB）'], ['c:@meta', '模型与耗时']]);
-  for (const x of evalBlocks(it.eval, S.cur.envs, 'c').blocks) keys.set(x.key, x.label);
-  // 单环境评估的结果统一用一个开关控制
-  if (multi() && Object.keys(it.envEvals || {}).length) keys.set('s:@all', '单环境评估（整块）');
-  const hide = hiddenSet();
-  $('showFields').innerHTML = [...keys].map(([k, l]) => `<label><input type="checkbox" value="${esc(k)}" ${hide.has(k) ? '' : 'checked'} /> ${esc(l)}</label>`).join('') || '<p class="hint">没有可显示的字段</p>';
-  $('dlgShow').showModal();
-}
-function applyShowDialog() {
-  $('showFields').querySelectorAll('input').forEach((c) => setHide(c.value, !c.checked));
-  $('dlgShow').close();
-  renderViewer(false);
-  renderGrid();
-}
-$('showAll').onclick = () => $('showFields').querySelectorAll('input').forEach((c) => (c.checked = true));
-$('showNone').onclick = () => $('showFields').querySelectorAll('input').forEach((c) => (c.checked = false));
-$('showGo').onclick = applyShowDialog;
-
 function renderViewer(force) {
   const it = curItem();
   if (!it) return closeViewer();
@@ -1108,18 +1004,28 @@ function renderViewer(force) {
   let evalHtml = '';
   if (ev?.status === 'queued' || ev?.status === 'running') evalHtml = `<p>${waitText(ev)}${ev.error ? `<br><span class="hint warn">${esc(ev.error)}</span>` : ''}</p>`;
   else if (ev?.status === 'failed') evalHtml = `<p class="err">评估失败：${esc(ev.error)}</p>`;
-  if ((ev?.text || ev?.data) && ev.status !== 'running') evalHtml += evalBlocksHtml(ev, envs, it);
+  if (ev?.text && ev.status !== 'running') {
+    const u = ev.usage;
+    const usage = u ? ` · 输入 ${u.prompt_tokens || u.input_tokens || 0} tokens，缓存命中 ${ev.cachedTokens || 0}` : '';
+    const sc = envs.map((e, k) => [k, modelScore(it, k)]).filter(([, x]) => typeof x === 'number');
+    const head = [modelGsb(it) !== null ? `模型 ${gsbTag(modelGsb(it))}` : modelPref(it) ? `偏好 ${prefLabel(modelPref(it))}` : '', sc.length ? `总分 ${sc.map(([k, x]) => `${envs.length > 1 ? `${L[k]} ` : ''}<b class="score">${x}</b>`).join(' / ')}` : ''].filter(Boolean).join(' · ');
+    evalHtml += `<p class="hint">${head ? `${head} · ` : ''}${esc(ev.model || '')}${ev.effort && ev.effort !== 'auto' ? ` · 思考 ${esc(ev.effort)}` : ''} · ${ev.at ? new Date(ev.at).toLocaleString('zh-CN') : ''}${took(ev)}${usage}</p>${md(ev.text)}`;
+  }
   if (!evalHtml) evalHtml = '<p class="hint">尚未进行模型评估。</p>';
   // 多环境批次：每个环境还可以单独打分（不和另一个环境比较），结果与对比评估分开保存。结论直接显示，明细折叠
-  const singleHtml = multi() && !hiddenSet().has('s:@all') ? envs.map((e, k) => {
+  const singleHtml = multi() ? envs.map((e, k) => {
     const s = it.envEvals?.[e.id];
     const busy = ['queued', 'running'].includes(s?.status);
     const head = s?.status === 'done' ? `${typeof s.score === 'number' ? `总分 <b class="score">${s.score}</b>/10 · ` : ''}${esc(s.model || '')} · ${s.at ? new Date(s.at).toLocaleString('zh-CN') : ''}${took(s)}`
       : busy ? `${waitText(s)}${s.error ? ` <span class="warn">${esc(s.error)}</span>` : ''}` : s?.status === 'failed' ? `<span class="err">评估失败：${esc(s.error)}</span>` : '未评估';
+    const [lead, ...rest] = String(s?.text || '').split(/\n\n/);
+    const showLead = s?.text && s.status !== 'running' && /^\*\*结论\*\*/.test(lead);
+    const detail = showLead ? rest.join('\n\n') : s?.text;
     return `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
       <div class="row">${envTag(k, e.name)}<span class="hint">${head}</span><span class="spacer"></span>
         <button type="button" class="sm owner-only" data-single="${e.id}" ${it.images[e.id] && !busy ? '' : 'disabled'}>${s?.text ? '重新单评' : '单独评估'}</button></div>
-      ${s?.status === 'done' ? evalBlocksHtml(s, envs, it, 's') : ''}</div>`;
+      ${showLead ? md(lead) : ''}
+      ${detail && s.status !== 'running' ? `<details data-sd="${e.id}" ${S.viewer.sd?.has(String(e.id)) ? 'open' : ''}><summary>${showLead ? '问题与维度明细' : '查看单评详情'}</summary>${md(detail)}</details>` : ''}</div>`;
   }).join('') : '';
   const m = it.manual || {};
   const SUB = { '-1': '明显', '-0.5': '略好', 0: '持平', 0.5: '略好', 1: '明显' };
@@ -1150,10 +1056,8 @@ function renderViewer(force) {
     <label class="f" for="vNote">备注</label>
     <textarea id="vNote" rows="3" placeholder="记录亮点、问题，失焦自动保存">${esc(m.note || '')}</textarea>
 
-    <div class="row"><h4 style="margin:16px 0 6px">${multi() ? '对比评估' : '模型评估'}</h4><span class="spacer"></span>
-      <button type="button" class="sm" id="vShow" title="选择显示哪些字段，只影响本机展示">显示设置</button></div>${evalHtml}
+    <h4 style="margin:16px 0 6px">${multi() ? '对比评估' : '模型评估'}</h4>${evalHtml}
     ${singleHtml ? `<h4 style="margin:16px 0 0">单环境评估</h4><p class="hint" style="margin:2px 0 0">只看这一个环境打分，不和另一个环境比较；与对比评估分开保存。</p>${singleHtml}` : ''}`;
-  if ($('vShow')) $('vShow').onclick = openShowDialog;
   $('vside').querySelectorAll('[data-sd]').forEach((d) => (d.ontoggle = () => {
     S.viewer.sd ??= new Set();
     d.open ? S.viewer.sd.add(d.dataset.sd) : S.viewer.sd.delete(d.dataset.sd); // 轮询重绘时保持展开状态
