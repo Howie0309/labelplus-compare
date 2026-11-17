@@ -619,7 +619,7 @@ function renderBatch(rebuild) {
   $('bMeta').innerHTML = `${b.envs.map((e, i) => envTag(i, e.name)).join('')} evaluation ${b.source.evaluationId} · 创建于 ${new Date(b.createdAt).toLocaleString('zh-CN')}`;
   renderEnum();
   const c = b.counts;
-  $('bStats').innerHTML = `<span>${c.chats} 段对话 · ${c.total} 轮</span><span class="ok">成功 ${c.done}</span><span class="err">失败 ${c.failed}</span><span>进行中 ${c.queued}</span><span>未开始 ${c.pending}</span><span>模型已评估 ${c.evaluated}</span><span>人工已标注 ${c.rated}</span>${prefStats(b)}${tokenInfo(b.tokens)}`;
+  renderStats(b);
   renderTools();
   document.querySelectorAll('[data-tab]').forEach((t) => t.setAttribute('aria-selected', t.dataset.tab === S.tab));
   $('tabItems').hidden = S.tab !== 'items';
@@ -641,10 +641,67 @@ function renderEnum() {
 }
 
 // 胜率条：模型与人工各一行
-function prefStats(b) {
+// ---------- 批次统计：拆成独立的小项，可在「统计项」里选择显示哪些 ----------
+const STAT_LABELS = {
+  scope: '对话 / 轮次总数', done: '截图成功', failed: '失败', queued: '进行中', pending: '未开始',
+  evaluated: '模型已评估', rated: '人工已标注', mPref: '模型胜率', hPref: '人工胜率',
+  mAvg: '模型均分', hAvg: '人工均分', avg: '平均总分（单环境）', single: '单评平均', tokens: 'token 用量',
+};
+function statsParts(b) {
+  const c = b.counts;
+  const parts = [
+    ['scope', `<span>${c.chats} 段对话 · ${c.total} 轮</span>`],
+    ['done', `<span class="ok">成功 ${c.done}</span>`],
+    ['failed', `<span class="err">失败 ${c.failed}</span>`],
+    ['queued', `<span>进行中 ${c.queued}</span>`],
+    ['pending', `<span>未开始 ${c.pending}</span>`],
+    ['evaluated', `<span>模型已评估 ${c.evaluated}</span>`],
+    ['rated', `<span>人工已标注 ${c.rated}</span>`],
+  ];
+  // 胜率与均分：从 prefStats 里拆出来
+  const p = prefParts(b);
+  for (const k of ['mPref', 'hPref', 'mAvg', 'hAvg', 'avg', 'single']) if (p[k]) parts.push([k, p[k]]);
+  const t = tokenInfo(b.tokens);
+  if (t) parts.push(['tokens', t]);
+  return parts;
+}
+function hiddenStats() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem('lpStatsHide') || '[]'));
+  } catch {
+    return new Set();
+  }
+}
+function renderStats(b) {
+  const hide = hiddenStats();
+  const parts = statsParts(b);
+  const shown = parts.filter(([k]) => !hide.has(k));
+  $('bStats').innerHTML = `${shown.map(([, h]) => h).join('') || '<span class="hint">统计已全部隐藏</span>'}<button type="button" class="sm" id="stCfg" title="选择显示哪些统计项">统计项</button>`;
+  $('stCfg').onclick = () => openStatsDialog(b);
+}
+function openStatsDialog(b) {
+  const hide = hiddenStats();
+  const have = new Set(statsParts(b).map(([k]) => k));
+  $('showStats').innerHTML = Object.entries(STAT_LABELS).filter(([k]) => have.has(k) || ['mPref', 'hPref', 'mAvg', 'hAvg'].includes(k))
+    .map(([k, l]) => `<label><input type="checkbox" value="${k}" ${hide.has(k) ? '' : 'checked'} /> ${esc(l)}</label>`).join('');
+  $('dlgStats').showModal();
+}
+function applyStatsDialog() {
+  const s = new Set();
+  $('showStats').querySelectorAll('input').forEach((c) => !c.checked && s.add(c.value));
+  localStorage.setItem('lpStatsHide', JSON.stringify([...s]));
+  $('dlgStats').close();
+  if (S.cur) renderStats(S.cur);
+}
+$('statsAll').onclick = () => $('showStats').querySelectorAll('input').forEach((c) => (c.checked = true));
+$('statsNone').onclick = () => $('showStats').querySelectorAll('input').forEach((c) => (c.checked = false));
+$('statsGo').onclick = applyStatsDialog;
+
+// 胜率条与均分（对比批次）
+function prefParts(b) {
   if (b.envs.length < 2) {
-    const s = b.items.map((i) => i.eval?.status === 'done' ? i.eval.score : null).filter((x) => typeof x === 'number');
-    return s.length ? `<span>平均总分 <b class="score">${(s.reduce((a, x) => a + x, 0) / s.length).toFixed(1)}</b></span>` : '';
+    const s = b.items.map((i) => (i.eval?.status === 'done' ? i.eval.score : null)).filter((x) => typeof x === 'number');
+    return { avg: s.length ? `<span>平均总分 <b class="score">${(s.reduce((a, x) => a + x, 0) / s.length).toFixed(1)}</b></span>` : '' };
   }
   const keys = [...L.slice(0, b.envs.length), 'same'];
   const color = { A: 'var(--a)', B: 'var(--b)', C: '#d97706', D: '#db2777', same: '#d1d5db' };
@@ -660,10 +717,19 @@ function prefStats(b) {
     const s = b.items.map((i) => modelScore(i, k)).filter((x) => typeof x === 'number');
     return s.length ? `${L[k]} <b class="score">${(s.reduce((a, x) => a + x, 0) / s.length).toFixed(1)}</b>` : '';
   }).filter(Boolean).join(' / ');
-  const gAvgOf = (label, list) => list.length ? `<span title="B 相对 A，-1~1">${label}均分 <b class="score">${fmtG(Math.round((list.reduce((a, x) => a + x, 0) / list.length) * 100) / 100)}</b>（${list.length} 条）</span>` : '';
-  const gAvg = gAvgOf('人工', b.items.map((i) => i.manual?.gsb).filter((g) => typeof g === 'number'));
-  const mAvg = gAvgOf('模型', b.items.map(modelGsb).filter((g) => g !== null));
-  return `${line('模型', modelPref)}${line('人工', (i) => i.manual?.pref)}${mAvg}${gAvg}${avg ? `<span>平均总分 ${avg}</span>` : ''}${singleAvg(b)}`;
+  const gAvgOf = (label, list) => (list.length ? `<span title="B 相对 A，-1~1">${label}均分 <b class="score">${fmtG(Math.round((list.reduce((a, x) => a + x, 0) / list.length) * 100) / 100)}</b>（${list.length} 条）</span>` : '');
+  return {
+    mPref: line('模型', modelPref),
+    hPref: line('人工', (i) => i.manual?.pref),
+    mAvg: gAvgOf('模型', b.items.map(modelGsb).filter((g) => g !== null)),
+    hAvg: gAvgOf('人工', b.items.map((i) => i.manual?.gsb).filter((g) => typeof g === 'number')),
+    avg: avg ? `<span>平均总分 ${avg}</span>` : '',
+    single: singleAvg(b),
+  };
+}
+function prefStats(b) {
+  const p = prefParts(b);
+  return `${p.mPref || ''}${p.hPref || ''}${p.mAvg || ''}${p.hAvg || ''}${p.avg || ''}${p.single || ''}`;
 }
 
 function singleAvg(b) {
