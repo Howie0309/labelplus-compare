@@ -34,6 +34,7 @@ const SINGLE = { intent: '测试', summary: '还行', dimensions: [{ name: '需�
 
 export function start(port = 0) {
   let vlmCalls = 0;
+  const payloads = [];
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     let body = '';
@@ -43,6 +44,7 @@ export function start(port = 0) {
       vlmCalls++;
       // 单环境评估时 user 消息里写的是「回答（环境名）」，返回单环境打分结构
       const out = body.includes('回答（') ? SINGLE : COMPARE;
+      payloads.push(JSON.parse(body));
       return json({ choices: [{ message: { content: '```json\n' + JSON.stringify(out) + '\n```' } }], usage: { prompt_tokens: 100, completion_tokens: 20 } });
     }
     const authed = (req.headers.cookie || '').includes('session=ok');
@@ -76,6 +78,6 @@ export function start(port = 0) {
     res.writeHead(404).end();
   });
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({
-    server, port: server.address().port, link: `http://x/labelplus/task/chat/query/101/${EVAL}/0/132`, calls: () => vlmCalls,
+    server, port: server.address().port, link: `http://x/labelplus/task/chat/query/101/${EVAL}/0/132`, calls: () => vlmCalls, payloads,
   })));
 }

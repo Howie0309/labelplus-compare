@@ -12,7 +12,7 @@ import { GSB, gsbPref } from './lib/store.mjs';
 import * as capture from './lib/capture.mjs';
 import * as evaluate from './lib/evaluate.mjs';
 import { exportBatch, exportJsonl } from './lib/excel.mjs';
-import { DEFAULT_COMPARE_PROMPT, DEFAULT_SINGLE_PROMPT, DEFAULT_SUMMARY_PROMPT, DEFAULT_FIELDS, DEFAULT_LABELS, chat, fieldsOf, normalizeEval } from './lib/vlm.mjs';
+import { DEFAULT_COMPARE_PROMPT, DEFAULT_SINGLE_PROMPT, DEFAULT_SUMMARY_PROMPT, DEFAULT_FIELDS, DEFAULT_LABELS, EFFORTS, chat, fieldsOf, normalizeEval } from './lib/vlm.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3230);
@@ -22,10 +22,10 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; cha
 const CHROME = '/Applications/Google Chrome.app';
 
 // ---------- 配置 ----------
-const CONFIG_KEYS = ['baseUrl', 'model', 'judgePrompt', 'singlePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries',
+const CONFIG_KEYS = ['baseUrl', 'model', 'reasoningEffort', 'judgePrompt', 'singlePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries',
   'field_gsb', 'field_preference', 'field_summary', 'field_dimensions', 'fieldLabels'];
 const FIELD_KEYS = CONFIG_KEYS.filter((k) => k.startsWith('field'));
-const DEFAULTS = { captureConcurrency: 3, captureRetries: 2, evalConcurrency: 3, evalRetries: 2 };
+const DEFAULTS = { captureConcurrency: 3, captureRetries: 2, evalConcurrency: 3, evalRetries: 2, reasoningEffort: 'auto' };
 
 function loadConfig() {
   try {
@@ -190,6 +190,7 @@ const routes = [
     cfg.captureRetries = num(cfg.captureRetries, 0, 5, DEFAULTS.captureRetries);
     cfg.evalConcurrency = num(cfg.evalConcurrency, 1, 8, DEFAULTS.evalConcurrency);
     cfg.evalRetries = num(cfg.evalRetries, 0, 5, DEFAULTS.evalRetries);
+    cfg.reasoningEffort = EFFORTS.includes(cfg.reasoningEffort) ? cfg.reasoningEffort : 'auto';
     cfg.cacheControl = !!cfg.cacheControl;
     if (body.apiKey) cfg.apiKey = body.apiKey.trim(); // 留空表示保留原 Key
     writeConfig(cfg);

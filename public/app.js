@@ -204,6 +204,7 @@ async function openSettings() {
   const c = (S.cfg = await api('GET', '/api/config'));
   $('sBase').value = c.baseUrl;
   $('sModel').value = c.model;
+  $('sEffort').value = c.reasoningEffort || 'auto';
   $('sKey').value = '';
   $('sKey').placeholder = c.hasKey ? `已保存 ${c.keyMask}（留空则不修改）` : '未设置';
   $('sEval').value = c.judgePrompt;
@@ -229,7 +230,7 @@ async function openSettings() {
 }
 async function saveSettings() {
   S.cfg = await api('POST', '/api/config', {
-    baseUrl: $('sBase').value, apiKey: $('sKey').value, model: $('sModel').value,
+    baseUrl: $('sBase').value, apiKey: $('sKey').value, model: $('sModel').value, reasoningEffort: $('sEffort').value,
     judgePrompt: $('sEval').value, singlePrompt: $('sSingle').value, summaryPrompt: $('sSum').value, cacheControl: $('sCache').checked,
     captureConcurrency: Number($('sCConc').value), captureRetries: Number($('sCRetry').value),
     evalConcurrency: Number($('sConc').value), evalRetries: Number($('sEvalRetry').value),
@@ -942,7 +943,7 @@ function renderViewer(force) {
     const usage = u ? ` · 输入 ${u.prompt_tokens || u.input_tokens || 0} tokens，缓存命中 ${ev.cachedTokens || 0}` : '';
     const sc = envs.map((e, k) => [k, modelScore(it, k)]).filter(([, x]) => typeof x === 'number');
     const head = [modelGsb(it) !== null ? `模型 ${gsbTag(modelGsb(it))}` : modelPref(it) ? `偏好 ${prefLabel(modelPref(it))}` : '', sc.length ? `总分 ${sc.map(([k, x]) => `${envs.length > 1 ? `${L[k]} ` : ''}<b class="score">${x}</b>`).join(' / ')}` : ''].filter(Boolean).join(' · ');
-    evalHtml += `<p class="hint">${head ? `${head} · ` : ''}${esc(ev.model || '')} · ${ev.at ? new Date(ev.at).toLocaleString('zh-CN') : ''}${took(ev)}${usage}</p>${md(ev.text)}`;
+    evalHtml += `<p class="hint">${head ? `${head} · ` : ''}${esc(ev.model || '')}${ev.effort && ev.effort !== 'auto' ? ` · 思考 ${esc(ev.effort)}` : ''} · ${ev.at ? new Date(ev.at).toLocaleString('zh-CN') : ''}${took(ev)}${usage}</p>${md(ev.text)}`;
   }
   if (!evalHtml) evalHtml = '<p class="hint">尚未进行模型评估。</p>';
   // 多环境批次：每个环境还可以单独打分（不和另一个环境比较），结果与对比评估分开保存。结论直接显示，明细折叠

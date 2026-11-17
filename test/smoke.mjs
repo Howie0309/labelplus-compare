@@ -103,6 +103,17 @@ try {
   await json('POST', '/api/config', { field_gsb: '', fieldLabels: '' });
   assert.equal((await json('GET', `/api/batches/${batchId}`)).items.find((i) => i.id === second.id).eval.gsb, 0.5);
   assert.equal(lp.calls(), calls);
+  // 思考强度：默认不加参数；high 发 reasoning_effort；off 发 thinking disabled
+  assert.equal(lp.payloads.at(-1).reasoning_effort, undefined);
+  await json('POST', '/api/config', { reasoningEffort: 'high' });
+  await json('POST', `/api/batches/${batchId}/eval`, { ids: [second.id], envId: 11 });
+  await until(async () => lp.payloads.at(-1)?.reasoning_effort === 'high', 20000, 'reasoning_effort=high');
+  assert.equal(lp.payloads.at(-1).thinking, undefined);
+  await json('POST', '/api/config', { reasoningEffort: 'off' });
+  await json('POST', `/api/batches/${batchId}/eval`, { ids: [second.id], envId: 11 });
+  await until(async () => lp.payloads.at(-1)?.thinking?.type === 'disabled', 20000, 'thinking disabled');
+  assert.equal(lp.payloads.at(-1).reasoning_effort, undefined);
+  await json('POST', '/api/config', { reasoningEffort: 'auto' });
   await call('PATCH', `/api/batches/${batchId}/items/${second.id}`, { manual: { gsb: 0.5, note: 'smoke' } });
   await call('PATCH', `/api/batches/${batchId}/items/${b.items[0].id}`, { manual: { gsb: 0.3 } }); // 不在五档里的值视为清空
 

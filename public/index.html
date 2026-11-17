@@ -193,6 +193,15 @@
   <input id="sKey" type="password" autocomplete="off" />
   <label class="f" for="sModel">模型名</label>
   <input id="sModel" type="text" autocomplete="off" />
+  <label class="f" for="sEffort">思考强度</label>
+  <select id="sEffort">
+    <option value="auto">跟随网关默认（当前不加参数）</option>
+    <option value="off">关闭思考</option>
+    <option value="low">low（轻）</option>
+    <option value="medium">medium（中）</option>
+    <option value="high">high（重）</option>
+  </select>
+  <p class="hint" style="margin:2px 0 0">low / medium / high 发 <code>reasoning_effort</code>；「关闭」发 <code>thinking: disabled</code>。思考越强越可能更准，但更慢、更费 token。实测该网关四种写法都不报错；是否真正思考以返回的思考 token 为准。</p>
   <label class="f" for="sEval">对比评估 Prompt（多环境 A vs B，作为 system 发送；留空用默认）</label>
   <p class="hint" style="margin:0 0 4px">只写评估角色、维度、标准和输出格式。问题、上文、各环境截图由程序放进 user 消息，多环境依次标为 A、B。输出 JSON 用 <code>dimensions[{name,a,b,reason}]</code> + <code>preference</code>（A / B / same），可自动拆分数和统计胜率。页面与导出里的展示顺序由程序固定为「偏好 → 结论 → 问题 → 意图 → 维度明细」，与 JSON 字段顺序无关。</p>
   <textarea id="sEval" rows="10"></textarea>
