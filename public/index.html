@@ -51,10 +51,11 @@
   .tabs button { border:none; border-bottom:2px solid transparent; border-radius:0; background:none; padding:8px 12px; }
   .tabs button[aria-selected=true] { border-bottom-color:var(--pri); color:var(--pri); font-weight:600; }
 
-  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:12px; }
-  .it { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+  .grid { display:block; }
+  #grid .grow { display:grid; gap:12px; margin-bottom:12px; }
+  .it { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; position:relative; height:334px; }
   .it.sel { border-color:var(--pri); box-shadow:0 0 0 1px var(--pri); }
-  .it .th { height:250px; background:#fafafa; display:flex; gap:2px; color:var(--sub); font-size:12px; cursor:pointer; border:none; padding:0; width:100%; border-radius:0; }
+  .it .th { height:200px; background:#fafafa; display:flex; gap:2px; color:var(--sub); font-size:12px; cursor:pointer; border:none; padding:0; width:100%; border-radius:0; }
   .it .th .c { flex:1; min-width:0; position:relative; display:flex; align-items:flex-start; justify-content:center; overflow:hidden; }
   .it .th .c > span:first-child { align-self:center; }
   .it .th img { width:100%; height:auto; display:block; }

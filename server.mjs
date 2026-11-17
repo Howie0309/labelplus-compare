@@ -321,10 +321,28 @@ const routes = [
       };
       b.summary = null;
     }
+    store.upd(it);
     store.save(b);
     return { ok: true, manual: it.manual };
   }],
   // 轻量同步：只返回 since 之后改过的人工标注，协作时每几秒拉一次，不用整批重新下载
+  // 增量刷新：只返回 since 之后变过的条目 + 批次级状态，页面不用每次重下整批
+  ['GET', '/api/batches/:id/updates', ({ id, query }) => {
+    const b = mustBatch(id);
+    const since = query.get('since') || '';
+    const v = (it) => `?v=${encodeURIComponent(it.shotAt || '')}`;
+    return {
+      now: new Date().toISOString(),
+      counts: counts(b), enum: b.enum, summary: b.summary,
+      evalPending: evaluate.pending(b.id), capturePending: capture.pending(b.id),
+      items: b.items.filter((i) => (i.upd || '') > since).map((it) => ({
+        ...it,
+        images: Object.fromEntries(Object.entries(it.shots || {}).map(([env, f]) => [env, store.imageUrl(b.id, f) + v(it)])),
+        compareImage: it.compare ? store.imageUrl(b.id, it.compare) + v(it) : null,
+        chatError: b.chats.find((c) => c.chatId === it.chatId)?.error || null,
+      })),
+    };
+  }],
   ['GET', '/api/batches/:id/manual', ({ id, query }) => {
     const b = mustBatch(id);
     const since = query.get('since') || '';

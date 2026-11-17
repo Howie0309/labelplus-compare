@@ -27,6 +27,7 @@ const S = {
   evalN: Math.max(1, Number(localStorage.getItem('lpEvalN')) || 100), // 「只评前 N 条」的 N
   evalFrom: Math.max(1, Number(localStorage.getItem('lpEvalFrom')) || 1), // 「第 x 到 y 条」的起止（卡片上的序号）
   evalTo: Math.max(1, Number(localStorage.getItem('lpEvalTo')) || 100),
+  sinced: '', // 增量刷新游标（上次拉到的服务端时间）
   role: 'owner', // owner=发起人（本机）；guest=通过分享链接进来的同事
   share: { enabled: false, online: [] },
   manualSince: '',
@@ -418,7 +419,7 @@ async function refresh() {
   S.batches = await api('GET', '/api/batches');
   if (S.view === 'batch' && S.cur) {
     try {
-      S.cur = await api('GET', `/api/batches/${encodeURIComponent(S.cur.id)}`);
+      await mergeBatch(S.cur.id);
     } catch {
       S.view = 'new';
       S.cur = null;
@@ -436,10 +437,30 @@ async function openBatch(id) {
   S.sel.clear();
   S.filter = 'all';
   S.search = '';
+  S.sinced = '';
   S.cur = await api('GET', `/api/batches/${encodeURIComponent(id)}`);
+  // 留 10 秒重叠，避免整批加载和增量刷新之间漏掉变动
+  S.sinced = new Date(Date.now() - 10000).toISOString();
+  gridWin = { key: '', start: -1, cols: 0 };
   localStorage.setItem('lpBatch', id);
   renderList();
   renderBatch(true);
+}
+
+// 增量刷新：只拉变过的条目（几 KB），不再每次重下整批（6 MB+）
+async function mergeBatch(id) {
+  if (!S.sinced) {
+    S.cur = await api('GET', `/api/batches/${encodeURIComponent(id)}`);
+    S.sinced = new Date(Date.now() - 10000).toISOString();
+    return;
+  }
+  const u = await api('GET', `/api/batches/${encodeURIComponent(id)}/updates?since=${encodeURIComponent(S.sinced)}`);
+  S.sinced = u.now;
+  if (u.items.length) {
+    const map = new Map(u.items.map((i) => [i.id, i]));
+    S.cur.items = S.cur.items.map((i) => map.get(i.id) || i);
+  }
+  Object.assign(S.cur, { counts: u.counts, enum: u.enum, summary: u.summary, evalPending: u.evalPending, capturePending: u.capturePending });
 }
 
 // 有进行中的任务时 2 秒轮询，否则 8 秒
@@ -871,43 +892,98 @@ function populateFilter() {
   sel.value = S.filter;
 }
 
+function cardHtml(it) {
+  const sel = S.sel.has(it.id);
+  const envs = S.cur.envs;
+  const thumbs = envs.map((e, k) => `<div class="c">${it.images[e.id] ? `<img src="${it.images[e.id]}" alt="" loading="lazy" />` : `<span>${it.status === 'done' ? '无此轮' : ST[it.status]}</span>`}${envs.length > 1 ? `<span class="lb">${L[k]} ${esc(e.name)}</span>` : ''}</div>`).join('');
+  const ev = it.eval?.status ? `<span class="badge ${it.eval.status === 'failed' ? 'failed' : it.eval.status === 'done' ? 'done' : ''}">${EV[it.eval.status]}</span>` : '';
+  const mp = modelPref(it);
+  const scores = envs.map((_, k) => modelScore(it, k)).filter((x) => typeof x === 'number');
+  return `<div class="it ${sel ? 'sel' : ''}" data-id="${it.id}">
+    <input type="checkbox" class="ck" ${sel ? 'checked' : ''} aria-label="选择 ${esc(it.query)}" />
+    <button type="button" class="th" data-open="${it.id}" aria-label="查看 ${esc(it.query)}">${thumbs}</button>
+    <div class="bd">
+      <div class="q" title="${esc(it.query)}">${it.id}. ${esc(it.query)}</div>
+      <div class="hint">chat ${it.chatId}${it.turn > 1 || it.context?.length ? ` · 第 ${it.turn} 轮` : ''}</div>
+      <div class="row" style="gap:4px;margin-top:4px">
+        <span class="badge ${it.status}">${ST[it.status]}${it.status === 'shooting' ? '…' : ''}</span>${ev}
+        ${modelGsb(it) !== null ? `<span class="tag">模型 ${gsbTag(modelGsb(it))}</span>` : mp ? `<span class="tag">模型 ${prefLabel(mp)}</span>` : ''}
+        ${scores.length ? `<span class="score">${scores.join(' : ')}</span>` : ''}
+        ${envs.length > 1 ? envs.map((e, k) => { const x = it.envEvals?.[e.id]; return x?.status === 'done' && typeof x.score === 'number' ? `<span class="tag" title="单环境评估">单评 ${L[k]} <b class="score">${x.score}</b></span>` : x?.status === 'failed' ? `<span class="tag err">单评 ${L[k]} 失败</span>` : ['queued', 'running'].includes(x?.status) ? `<span class="tag">单评 ${L[k]}…</span>` : ''; }).join('') : ''}
+        ${typeof it.manual?.gsb === 'number' ? `<span class="tag">人工 ${gsbTag(it.manual.gsb)}</span>` : it.manual?.pref ? `<span class="tag">人工 ${prefLabel(it.manual.pref)}</span>` : ''}
+        ${it.manual?.rating ? `<span class="tag">人工：${RT[it.manual.rating]}</span>` : ''}
+      </div>
+      ${it.error ? `<div class="hint ${it.status === 'failed' ? 'err' : 'warn'}" style="margin-top:4px">${esc(it.error)}</div>` : ''}
+      ${it.eval?.status === 'failed' ? `<div class="hint err" style="margin-top:4px">评估失败：${esc(it.eval.error)}</div>` : ''}
+    </div></div>`;
+}
+
+// 虚拟滚动：只渲染可视区域附近的卡片，4923 条也不会一次画出上万个节点
+const ROW_H = 346; // 卡片固定高度 + 行间距
+const COL_W = 262; // 每列最小宽度
+let gridWin = { key: '', start: -1, cols: 0 };
+
+function gridCols() {
+  const w = $('grid').clientWidth || 900;
+  return Math.max(1, Math.floor((w + 12) / COL_W));
+}
+
+function renderGridWindow() {
+  const list = visibleItems();
+  const main = document.querySelector('section.main');
+  if (!list.length) {
+    $('grid').innerHTML = `<p class="hint">${S.cur.items.length ? '没有符合条件的条目' : S.cur.enum.status === 'running' ? '正在拉取对话列表…' : '还没有条目'}</p>`;
+    return;
+  }
+  const cols = gridCols();
+  const rows = Math.ceil(list.length / cols);
+  const gridTop = $('grid').getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
+  const viewRows = Math.ceil(main.clientHeight / ROW_H) + 4;
+  const start = Math.max(0, Math.min(rows - 1, Math.floor((main.scrollTop - gridTop) / ROW_H)));
+  gridWin = { key: `${S.cur.id}|${S.filter}|${S.search}|${list.length}|${cols}`, start, cols };
+  const end = Math.min(rows, start + viewRows);
+  const slice = list.slice(start * cols, end * cols);
+  const rowHtml = [];
+  for (let r = start; r < end; r++) {
+    rowHtml.push(`<div class="grow" style="grid-template-columns:repeat(${cols}, minmax(0,1fr))">${slice.slice((r - start) * cols, (r - start + 1) * cols).map(cardHtml).join('')}</div>`);
+  }
+  $('grid').innerHTML = `<div style="height:${start * ROW_H}px"></div>${rowHtml.join('')}<div style="height:${(rows - end) * ROW_H}px"></div>`;
+}
+
 function renderGrid() {
   populateFilter();
   const list = visibleItems();
-  const envs = S.cur.envs;
-  $('grid').innerHTML = list.length
-    ? list
-        .map((it) => {
-          const sel = S.sel.has(it.id);
-          const thumbs = envs.map((e, k) => `<div class="c">${it.images[e.id] ? `<img src="${it.images[e.id]}" alt="" loading="lazy" />` : `<span>${it.status === 'done' ? '无此轮' : ST[it.status]}</span>`}${envs.length > 1 ? `<span class="lb">${L[k]} ${esc(e.name)}</span>` : ''}</div>`).join('');
-          const ev = it.eval?.status ? `<span class="badge ${it.eval.status === 'failed' ? 'failed' : it.eval.status === 'done' ? 'done' : ''}">${EV[it.eval.status]}</span>` : '';
-          const mp = modelPref(it);
-          const scores = envs.map((_, k) => modelScore(it, k)).filter((x) => typeof x === 'number');
-          return `<div class="it ${sel ? 'sel' : ''}" data-id="${it.id}">
-            <input type="checkbox" class="ck" ${sel ? 'checked' : ''} aria-label="选择 ${esc(it.query)}" />
-            <button type="button" class="th" data-open="${it.id}" aria-label="查看 ${esc(it.query)}">${thumbs}</button>
-            <div class="bd">
-              <div class="q" title="${esc(it.query)}">${it.id}. ${esc(it.query)}</div>
-              <div class="hint">chat ${it.chatId}${it.turn > 1 || it.context?.length ? ` · 第 ${it.turn} 轮` : ''}</div>
-              <div class="row" style="gap:4px;margin-top:4px">
-                <span class="badge ${it.status}">${ST[it.status]}${it.status === 'shooting' ? '…' : ''}</span>${ev}
-                ${modelGsb(it) !== null ? `<span class="tag">模型 ${gsbTag(modelGsb(it))}</span>` : mp ? `<span class="tag">模型 ${prefLabel(mp)}</span>` : ''}
-                ${scores.length ? `<span class="score">${scores.join(' : ')}</span>` : ''}
-                ${envs.length > 1 ? envs.map((e, k) => { const s = it.envEvals?.[e.id]; return s?.status === 'done' && typeof s.score === 'number' ? `<span class="tag" title="单环境评估">单评 ${L[k]} <b class="score">${s.score}</b></span>` : s?.status === 'failed' ? `<span class="tag err">单评 ${L[k]} 失败</span>` : ['queued', 'running'].includes(s?.status) ? `<span class="tag">单评 ${L[k]}…</span>` : ''; }).join('') : ''}
-                ${typeof it.manual?.gsb === 'number' ? `<span class="tag">人工 ${gsbTag(it.manual.gsb)}</span>` : it.manual?.pref ? `<span class="tag">人工 ${prefLabel(it.manual.pref)}</span>` : ''}
-                ${it.manual?.rating ? `<span class="tag">人工：${RT[it.manual.rating]}</span>` : ''}
-              </div>
-              ${it.error ? `<div class="hint ${it.status === 'failed' ? 'err' : 'warn'}" style="margin-top:4px">${esc(it.error)}</div>` : ''}
-              ${it.eval?.status === 'failed' ? `<div class="hint err" style="margin-top:4px">评估失败：${esc(it.eval.error)}</div>` : ''}
-            </div></div>`;
-        })
-        .join('')
-    : `<p class="hint">${S.cur.items.length ? '没有符合条件的条目' : S.cur.enum.status === 'running' ? '正在拉取对话列表…' : '还没有条目'}</p>`;
+  const cols = gridCols();
+  const key = `${S.cur.id}|${S.filter}|${S.search}|${list.length}|${cols}`;
+  // 只有换批次 / 换筛选 / 列数变化才重置滚动位置，轮询刷新时保持不动
+  if (key !== gridWin.key && gridWin.key) {
+    const main = document.querySelector('section.main');
+    main.scrollTop = 0;
+  }
+  renderGridWindow();
   const n = selIds().length;
   $('selInfo').textContent = n ? `已选 ${n} 条` : '';
   $('selAll').checked = list.length > 0 && list.every((i) => S.sel.has(i.id));
   renderTools();
 }
+
+// 滚动时按需补渲染（节流到下一帧）
+let scrollTick = null;
+document.addEventListener('scroll', (e) => {
+  if (!e.target.matches?.('section.main') || S.tab !== 'items' || !S.cur) return;
+  if (scrollTick) return;
+  scrollTick = requestAnimationFrame(() => {
+    scrollTick = null;
+    const list = visibleItems();
+    if (!list.length) return;
+    const cols = gridCols();
+    const main = e.target;
+    const rows = Math.ceil(list.length / cols);
+    const gridTop = $('grid').getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
+    const start = Math.max(0, Math.min(rows - 1, Math.floor((main.scrollTop - gridTop) / ROW_H)));
+    if (start !== gridWin.start || cols !== gridWin.cols) renderGridWindow();
+  });
+}, true);
 
 function onGridClick(e) {
   const card = e.target.closest('.it');
