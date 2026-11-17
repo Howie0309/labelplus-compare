@@ -23,10 +23,16 @@ const S = {
   parsed: null, // 新建批次时解析出的链接信息
   viewer: { open: false, id: null, mode: localStorage.getItem('lpViewMode') || 'split', zoom: 'fit', scale: 1 },
   cfg: null,
+  me: localStorage.getItem('lpName') || '', // 标注人名字，多人协作时记录谁改的
+  role: 'owner', // owner=发起人（本机）；guest=通过分享链接进来的同事
+  share: { enabled: false, online: [] },
+  manualSince: '',
 };
 
 async function api(method, url, body) {
-  const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+  const headers = { 'Content-Type': 'application/json', 'X-Labeler': encodeURIComponent(S.me || '') };
+  if (S.viewer.open) headers['X-Viewing'] = String(S.viewer.id);
+  const res = await fetch(url, { method, headers, body: body && JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { cookie: !!data.cookie });
   return data;
@@ -112,6 +118,15 @@ function modelScore(it, k) {
 async function refreshStatus() {
   const s = await api('GET', '/api/status').catch(() => null);
   if (!s) return;
+  S.role = s.role || 'owner';
+  S.share = s.share || { enabled: false, online: [] };
+  document.body.classList.toggle('guest', S.role === 'guest');
+  renderPresence();
+  if (S.role === 'guest') {
+    $('cookieState').innerHTML = '<span class="dot on"></span>协作模式（由发起人负责截图和模型评估）';
+    $('queueState').textContent = s.capture.running ? `发起人正在截图 · 队列剩余 ${s.capture.queue} 段对话` : '';
+    return s;
+  }
   $('cookieState').innerHTML = `<span class="dot ${s.cookie ? 'on' : ''}"></span>${s.login?.status === 'waiting' ? '等待在弹出的 Chrome 里登录…' : s.cookie ? 'Cookie 已配置' : '缺 Cookie'}${s.chrome ? '' : ' · <span class="err">未找到 Google Chrome</span>'}`;
   renderLoginState(s.login);
   const c = s.capture;
@@ -197,6 +212,7 @@ async function openSettings() {
   $('sConc').value = c.evalConcurrency;
   $('sEvalRetry').value = c.evalRetries;
   $('sMsg').textContent = '';
+  renderShare(await api('GET', '/api/share').catch(() => ({ enabled: false, urls: [], online: [] })));
   $('dlgSettings').showModal();
 }
 async function saveSettings() {
@@ -208,6 +224,31 @@ async function saveSettings() {
   });
 }
 $('btnSettings').onclick = openSettings;
+
+// 协作开关立即生效（不用点保存）
+function renderShare(v) {
+  $('shOn').checked = v.enabled;
+  $('shRegen').disabled = !v.enabled;
+  $('shBox').innerHTML = v.enabled
+    ? `${v.urls.map((u) => `<div class="row" style="margin-top:4px"><code style="word-break:break-all">${esc(u)}</code><button type="button" class="sm" data-copy="${esc(u)}">复制链接</button></div>`).join('')}
+       <div style="margin-top:4px">在线：${(v.online || []).map((p) => esc(p.name)).join('、') || '暂无'}</div>`
+    : '未开启。';
+  $('shBox').querySelectorAll('[data-copy]').forEach((b) => (b.onclick = () => navigator.clipboard?.writeText(b.dataset.copy).then(() => toast('分享链接已复制，发给同事即可'), () => toast('复制失败，请手动选中复制', true))));
+}
+async function setShare(body) {
+  try {
+    renderShare(await api('POST', '/api/share', body));
+    refreshStatus();
+  } catch (e) {
+    toast(e.message, true);
+    renderShare(await api('GET', '/api/share'));
+  }
+}
+$('shOn').onchange = (e) => {
+  if (e.target.checked) ensureName();
+  setShare({ enabled: e.target.checked });
+};
+$('shRegen').onclick = () => confirm('重新生成后，之前发出去的链接会立即失效，同事需要用新链接重新打开。继续？') && setShare({ enabled: true, regenerate: true });
 $('sSave').onclick = async () => {
   try {
     await saveSettings();
@@ -264,6 +305,10 @@ $('btnNew').onclick = () => {
 // ---------- 新建批次：粘贴链接 → 解析 → 选环境顺序与范围 → 创建 ----------
 function renderNew() {
   $('main').dataset.batch = '';
+  if (S.role === 'guest') {
+    $('main').innerHTML = '<div class="card" style="max-width:820px"><h2>还没有批次</h2><p class="hint">由发起人新建批次并截图，建好后会出现在左侧列表里。</p></div>';
+    return;
+  }
   $('main').innerHTML = `<div class="card" style="max-width:820px">
     <h2>新建批次</h2>
     <label class="f" for="nLink">labelplus 评估页链接（从哪一条开始）</label>
@@ -390,6 +435,53 @@ async function loop() {
   setTimeout(loop, busy ? 2000 : 8000);
 }
 
+// ---------- 多人协作：只同步人工标注的增量（几 KB），别人改的几秒内出现在自己页面上 ----------
+async function syncManual() {
+  const b = S.cur;
+  if (b && S.view === 'batch' && (S.share.enabled || S.role === 'guest')) {
+    try {
+      const r = await api('GET', `/api/batches/${encodeURIComponent(b.id)}/manual?since=${encodeURIComponent(S.manualSince)}`);
+      if (S.cur === b) {
+        S.manualSince = r.now;
+        let changed = false;
+        for (const x of r.items) {
+          const it = b.items.find((i) => i.id === x.id);
+          if (!it || JSON.stringify(it.manual) === JSON.stringify(x.manual)) continue;
+          it.manual = x.manual;
+          changed = true;
+        }
+        if (changed) {
+          b.counts.rated = b.items.filter((i) => i.manual?.pref || i.manual?.rating).length; // 统计里的「人工已标注」跟着更新
+          renderBatch();
+          if (S.viewer.open) renderViewer(false);
+        }
+      }
+    } catch {}
+  }
+  setTimeout(syncManual, 3000);
+}
+
+// 顶栏显示谁在线、各自正在看哪一条
+function renderPresence() {
+  const list = S.share.online || [];
+  const show = S.share.enabled || S.role === 'guest';
+  $('presence').hidden = !show;
+  $('btnName').hidden = !show;
+  $('btnName').textContent = S.me ? `我：${S.me}` : '设置名字';
+  if (!show) return;
+  $('presence').innerHTML = `协作中 · ${list.length} 人在线：${list.map((p) => `<span class="tag" title="${p.itemId ? `正在看第 ${p.itemId} 条` : ''}">${esc(p.name)}${p.role === 'owner' ? '（发起人）' : ''}${p.name === S.me ? '（我）' : ''}</span>`).join('') || '—'}`;
+}
+
+function ensureName(force) {
+  if (S.me && !force) return;
+  const n = (prompt('你的名字（标注时记录是谁改的）', S.me || '') || '').trim().slice(0, 30);
+  if (n) {
+    S.me = n;
+    localStorage.setItem('lpName', n);
+  }
+}
+$('btnName').onclick = () => (ensureName(true), refreshStatus());
+
 // ---------- 批次详情 ----------
 const FILTERS = {
   all: ['全部', () => true],
@@ -403,6 +495,11 @@ const FILTERS = {
 };
 function filterDefs() {
   const defs = { ...FILTERS };
+  if (S.share.enabled || S.role === 'guest' || S.cur.items.some((i) => i.manual?.by)) {
+    const marked = (i) => i.manual?.gsb != null || i.manual?.rating || i.manual?.note;
+    defs['by:me'] = ['我标注的', (i) => marked(i) && i.manual.by === S.me];
+    defs['by:other'] = ['别人标注的', (i) => marked(i) && i.manual.by && i.manual.by !== S.me];
+  }
   if (multi()) {
     for (const p of [...L.slice(0, S.cur.envs.length), 'same']) {
       const label = p === 'same' ? '持平' : `${p} 更好`;
@@ -433,11 +530,11 @@ function renderBatch(rebuild) {
     $('main').innerHTML = `
       <div class="card">
         <div class="row"><h2 id="bName" style="margin:0"></h2><span id="bMeta" class="hint"></span><span class="spacer"></span>
-          <button type="button" id="bRename">重命名</button><button type="button" id="bDel" class="danger">删除批次</button></div>
+          <button type="button" id="bRename" class="owner-only">重命名</button><button type="button" id="bDel" class="danger owner-only">删除批次</button></div>
         <div id="bEnum" class="hint" style="margin-top:6px"></div>
         <div id="bStats" class="stats hint" style="margin-top:4px"></div>
         <div class="toolbar" id="bTools" style="margin-top:10px"></div>
-        <details id="bExt" style="margin-top:10px"><summary>补充截图（接着往后取，或从另一条开始补）</summary>
+        <details id="bExt" class="owner-only" style="margin-top:10px"><summary>补充截图（接着往后取，或从另一条开始补）</summary>
           <div class="row" style="margin-top:8px">
             <input id="xLink" type="text" style="flex:1;min-width:320px" placeholder="从哪一条开始（粘贴同一评估的链接）；留空 = 接着上次的位置往后" />
           </div>
@@ -513,8 +610,8 @@ function renderBatch(rebuild) {
 function renderEnum() {
   const e = S.cur.enum;
   const plan = e.status === 'running' ? (e.remaining == null ? '，取到最后为止' : `，本次还要取 ${e.remaining} 条`) : '';
-  const btn = e.status === 'running' ? '<button type="button" class="sm" id="enStop">停止拉取</button>'
-    : e.status === 'paused' && e.next ? '<button type="button" class="sm" id="enGo">继续拉取</button>' : '';
+  const btn = e.status === 'running' ? '<button type="button" class="sm owner-only" id="enStop">停止拉取</button>'
+    : e.status === 'paused' && e.next ? '<button type="button" class="sm owner-only" id="enGo">继续拉取</button>' : '';
   const where = e.next ? '' : e.status === 'done' ? ' · 已到评估的最后一条' : '';
   $('bEnum').innerHTML = `${ENUM[e.status] || e.status}：本批次已有 ${S.cur.counts.chats} 段对话${e.total ? `（评估共 ${e.total} 条）` : ''}${plan}${where} ${btn}${e.error ? ` <span class="${e.status === 'failed' ? 'err' : 'warn'}">${esc(e.error)}</span>` : ''}`;
   if ($('enStop')) $('enStop').onclick = () => act(() => api('POST', `/api/batches/${bid()}/enumerate/stop`), '已停止拉取，已取到的会继续截图');
@@ -573,17 +670,17 @@ function renderTools() {
     ? `<select id="evMode" aria-label="评估方式">${[['compare', `对比评估（${b.envs.map((e, k) => L[k]).join(' vs ')}）`], ...b.envs.map((e, k) => [String(e.id), `单评 ${L[k]} ${e.name}`])]
         .map(([v, t]) => `<option value="${v}" ${v === mode ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>` : '';
   $('bTools').innerHTML = `
-    <div class="grp"><span>截图</span>
+    <div class="grp owner-only"><span>截图</span>
       <button type="button" data-a="retryFailed" ${c.failed ? '' : 'disabled'}>重试失败（${c.failed}）</button>
       <button type="button" data-a="shootUnfinished" ${c.failed + c.pending ? '' : 'disabled'}>截取未完成（${c.failed + c.pending}）</button>
       <button type="button" data-a="reshootSel" ${n ? '' : 'disabled'} title="按所在对话整段重截">重截选中（${n}）</button>
       <button type="button" data-a="cancelShoot" ${c.queued ? '' : 'disabled'}>取消排队</button></div>
-    <div class="grp"><span>模型评估</span>${modeSel}
+    <div class="grp owner-only"><span>模型评估</span>${modeSel}
       <button type="button" data-a="evalSel" ${n ? '' : 'disabled'}>评估选中（${n}）</button>
       <button type="button" data-a="evalRest" class="pri" ${unevaluated ? '' : 'disabled'}>批量评估待评估（${unevaluated}）</button>
       <button type="button" data-a="cancelEval" ${evalBusy ? '' : 'disabled'}>取消评估</button></div>
     <div class="grp"><span>分析 / 导出</span>
-      <button type="button" data-a="summary" ${b.summary?.status === 'running' ? 'disabled' : ''}>整体分析（${n ? `选中 ${n}` : '全部'}）</button>
+      <button type="button" class="owner-only" data-a="summary" ${b.summary?.status === 'running' ? 'disabled' : ''}>整体分析（${n ? `选中 ${n}` : '全部'}）</button>
       <button type="button" data-a="export">导出 Excel / JSONL（${n ? `选中 ${n}` : '全部'}）</button></div>`;
   $('bTools').onclick = (e) => {
     const a = e.target.closest('[data-a]')?.dataset.a;
@@ -696,7 +793,7 @@ function renderSummary() {
   const s = S.cur.summary;
   const n = selIds().length;
   const head = `<div class="row"><h2 style="margin:0">整体分析</h2><span class="spacer"></span>
-    <button type="button" id="sumRun" ${s?.status === 'running' ? 'disabled' : ''}>${s ? '重新分析' : '开始分析'}（${n ? `选中 ${n}` : '全部'}）</button></div>
+    <button type="button" id="sumRun" class="owner-only" ${s?.status === 'running' ? 'disabled' : ''}>${s ? '重新分析' : '开始分析'}（${n ? `选中 ${n}` : '全部'}）</button></div>
     <p class="hint">基于逐条的模型评估和人工标注生成，不会重新读图。重截、重新评估或修改标注后需重新分析。</p>`;
   let body = '<p class="hint">还没有整体分析。</p>';
   if (s?.status === 'running') body = '<p>分析中…</p>';
@@ -792,16 +889,17 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'ArrowLeft') stepViewer(-1);
   else if (multi() && ['1', '2', '3', '4', '5'].includes(e.key)) setManual('gsb', GSB[Number(e.key) - 1]);
   else if (['1', '2', '3'].includes(e.key)) setManual('rating', { 1: 'good', 2: 'ok', 3: 'bad' }[e.key]);
-  else if (e.key === 'e' || e.key === 'E') $('vEval')?.click();
+  else if ((e.key === 'e' || e.key === 'E') && S.role === 'owner') $('vEval')?.click();
 });
 
 async function setManual(k, v) {
   const it = curItem();
   if (!it) return;
   const val = it.manual?.[k] === v ? null : v;
-  it.manual = { ...(it.manual || {}), [k]: val, ...(k === 'gsb' ? { pref: val == null ? null : val > 0 ? 'B' : val < 0 ? 'A' : 'same' } : {}) };
+  it.manual = { ...(it.manual || {}), [k]: val, ...(k === 'gsb' ? { pref: val == null ? null : val > 0 ? 'B' : val < 0 ? 'A' : 'same' } : {}), by: S.me || it.manual?.by, at: new Date().toISOString() };
   renderViewer(false);
-  await api('PATCH', `/api/batches/${bid()}/items/${it.id}`, { manual: { [k]: val } }).catch((e) => toast(e.message, true));
+  const r = await api('PATCH', `/api/batches/${bid()}/items/${it.id}`, { manual: { [k]: val } }).catch((e) => toast(e.message, true));
+  if (r?.manual) it.manual = r.manual; // 以服务端记录（含修改人、时间）为准
 }
 // 评估进行中显示已等待时长；完成后显示耗时（模型要读图并写较长的理由，单条通常 30–90 秒）
 const waitText = (e) => e.status === 'queued' ? '评估排队中…' : `评估中… 已 ${e.startedAt ? Math.max(0, Math.round((Date.now() - new Date(e.startedAt)) / 1000)) : '?'} 秒（读图并写理由，通常 30–90 秒）`;
@@ -838,7 +936,7 @@ function renderViewer(force) {
     const detail = showLead ? rest.join('\n\n') : s?.text;
     return `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
       <div class="row">${envTag(k, e.name)}<span class="hint">${head}</span><span class="spacer"></span>
-        <button type="button" class="sm" data-single="${e.id}" ${it.images[e.id] && !busy ? '' : 'disabled'}>${s?.text ? '重新单评' : '单独评估'}</button></div>
+        <button type="button" class="sm owner-only" data-single="${e.id}" ${it.images[e.id] && !busy ? '' : 'disabled'}>${s?.text ? '重新单评' : '单独评估'}</button></div>
       ${showLead ? md(lead) : ''}
       ${detail && s.status !== 'running' ? `<details data-sd="${e.id}" ${S.viewer.sd?.has(String(e.id)) ? 'open' : ''}><summary>${showLead ? '问题与维度明细' : '查看单评详情'}</summary>${md(detail)}</details>` : ''}</div>`;
   }).join('') : '';
@@ -861,11 +959,13 @@ function renderViewer(force) {
       ${it.compareImage ? `<a href="${it.compareImage}" download>下载拼图</a> <button type="button" class="sm" id="vCopy">复制拼图</button>` : ''}</div>
     ${it.error ? `<p class="${it.status === 'failed' ? 'err' : 'warn'} hint">${esc(it.error)}</p>` : ''}
     <div class="row" style="margin-top:8px">
-      <button type="button" id="vShoot" title="整段对话重截，会清空该对话各轮的评估与人工标注">重截这段对话</button>
-      <button type="button" id="vEval" class="pri" ${it.status === 'done' ? '' : 'disabled'}>${multi() ? (ev?.text ? '重新对比评估（E）' : '对比评估（E）') : ev?.text ? '重新评估（E）' : '模型评估（E）'}</button></div>
+      <button type="button" id="vShoot" class="owner-only" title="整段对话重截，会清空该对话各轮的评估与人工标注">重截这段对话</button>
+      <button type="button" id="vEval" class="pri owner-only" ${it.status === 'done' ? '' : 'disabled'}>${multi() ? (ev?.text ? '重新对比评估（E）' : '对比评估（E）') : ev?.text ? '重新评估（E）' : '模型评估（E）'}</button></div>
 
     <h4 style="margin:16px 0 6px">人工${multi() ? '偏好' : '评级'} <span class="hint" style="font-weight:400">快捷键 ${multi() ? '1–5' : '1–3'}</span></h4>
     ${manual}
+    ${m.by && m.at ? `<p class="hint" style="margin:4px 0 0">最后由 <b>${esc(m.by)}</b>${m.by === S.me ? '（我）' : ''} 修改于 ${new Date(m.at).toLocaleString('zh-CN')}${m.by !== S.me ? '，再标会覆盖' : ''}</p>` : ''}
+    ${(S.share.online || []).filter((p) => p.name !== S.me && p.itemId === it.id).map((p) => `<p class="hint warn" style="margin:2px 0 0">${esc(p.name)} 也正在看这一条</p>`).join('')}
     <label class="f" for="vNote">备注</label>
     <textarea id="vNote" rows="3" placeholder="记录亮点、问题，失焦自动保存">${esc(m.note || '')}</textarea>
 
@@ -888,7 +988,10 @@ function renderViewer(force) {
   $('vNote').onblur = (e) => {
     if (e.target.value === (it.manual?.note || '')) return;
     it.manual = { ...(it.manual || {}), note: e.target.value };
-    api('PATCH', `/api/batches/${bid()}/items/${it.id}`, { manual: { note: e.target.value } }).then(() => toast('备注已保存'), (err) => toast(err.message, true));
+    api('PATCH', `/api/batches/${bid()}/items/${it.id}`, { manual: { note: e.target.value } }).then((r) => {
+      if (r?.manual) it.manual = r.manual;
+      toast('备注已保存');
+    }, (err) => toast(err.message, true));
   };
 }
 
@@ -945,12 +1048,15 @@ $('expJsonl').onclick = () => {
 
 // ---------- 启动 ----------
 (async () => {
+  let s = await refreshStatus();
+  if (S.role === 'guest' || s?.share?.enabled) ensureName();
   await refresh().catch(() => {});
   const last = localStorage.getItem('lpBatch');
   const first = S.batches.find((b) => b.id === last) || S.batches[0];
   if (first) await openBatch(first.id).catch(() => renderNew());
   else renderNew();
-  const s = await refreshStatus();
-  if (s && !s.cookie) openCookie();
+  s = await refreshStatus();
+  if (s && S.role === 'owner' && !s.cookie) openCookie();
   loop();
+  syncManual();
 })();

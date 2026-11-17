@@ -144,7 +144,30 @@ try {
   const first = await until(async () => (await json('GET', `/api/batches/${b2}`)).items[0], 20000, '从第 1 条建批次');
   assert.equal(first.chatId, 101);
   await call('DELETE', `/api/batches/${b2}`);
-  console.log('冒烟通过：Cookie 校验、解析、拉取 2 段对话、截图 3 轮 × 2 环境 + 拼图、单条对比评估、人工偏好、Excel（截图按行归属）、JSONL');
+
+  // 局域网协作：开启后同事凭分享链接访问，只能看、标注、导出；标注记录修改人
+  const sh = await json('POST', '/api/share', { enabled: true });
+  if (sh.urls.length) {
+    const u = new URL(sh.urls[0]);
+    const lan = `${u.protocol}//${u.host}`;
+    assert.equal((await fetch(`${lan}/api/status`)).status, 401); // 没口令
+    const go = await fetch(sh.urls[0], { redirect: 'manual' });
+    assert.equal(go.status, 302);
+    const cookie = go.headers.get('set-cookie').split(';')[0];
+    const g = (p, o = {}) => fetch(lan + p, { ...o, headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-Labeler': encodeURIComponent('张三'), ...(o.headers || {}) } });
+    assert.equal((await (await g('/api/status')).json()).role, 'guest');
+    assert.equal((await g(`/api/batches/${batchId}`)).status, 200);
+    const pr = await (await g(`/api/batches/${batchId}/items/${second.id}`, { method: 'PATCH', body: JSON.stringify({ manual: { gsb: -1 } }) })).json();
+    assert.deepEqual([pr.manual.gsb, pr.manual.by, pr.manual.note], [-1, '张三', 'smoke']); // 覆盖打分，备注保留
+    assert.equal((await g('/api/batches', { method: 'POST', body: '{}' })).status, 403);
+    assert.equal((await g('/api/share')).status, 403);
+    const sync = await json('GET', `/api/batches/${batchId}/manual?since=`);
+    assert.equal(sync.items.find((x) => x.id === second.id).manual.by, '张三');
+    assert.ok((await json('GET', '/api/status')).share.online.some((p) => p.name === '张三'));
+    await json('POST', '/api/share', { enabled: false });
+    assert.ok(await fetch(`${lan}/api/status`, { headers: { Cookie: cookie } }).then(() => false, () => true)); // 关闭后不再监听
+  } else console.log('（没有局域网地址，跳过协作测试）');
+  console.log('冒烟通过：Cookie 校验、解析、拉取 2 段对话、截图 3 轮 × 2 环境 + 拼图、单条对比评估、人工偏好、Excel（截图按行归属）、JSONL、局域网协作');
 } finally {
   if (batchId) await call('DELETE', `/api/batches/${batchId}`).catch(() => {});
   child.kill();

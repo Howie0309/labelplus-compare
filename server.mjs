@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as lp from './lib/labelplus.mjs';
 import * as login from './lib/login.mjs';
+import * as share from './lib/share.mjs';
 import * as store from './lib/store.mjs';
 import { GSB, gsbPref } from './lib/store.mjs';
 import * as capture from './lib/capture.mjs';
@@ -85,6 +86,11 @@ async function refreshCookie() {
   return true;
 }
 capture.init(loadConfig, { refresh: refreshCookie });
+
+function shareView() {
+  const s = loadConfig().share || {};
+  return { enabled: !!s.enabled, urls: s.enabled && s.token ? share.urls(PORT, s.token) : [], online: share.online() };
+}
 
 // ---------- 视图数据 ----------
 function counts(b) {
@@ -205,11 +211,13 @@ const routes = [
     capture.resume();
     return { ok: true };
   }],
-  ['GET', '/api/status', () => ({
+  ['GET', '/api/status', ({ role }) => ({
     labelplus: true,
+    role,
     chrome: process.platform !== 'darwin' || fs.existsSync(CHROME),
     cookie: !!loadConfig().cookie,
     login: login.state,
+    share: { enabled: !!loadConfig().share?.enabled, online: share.online() },
     capture: { ...capture.state, queue: capture.pending() },
   })],
   ['POST', '/api/capture/resume', () => (capture.resume(), { ok: true })],
@@ -274,7 +282,7 @@ const routes = [
     capture.extend(b.id, { chatId, more: Math.max(0, Math.round(Number(body.more) || 0)) });
     return brief(b);
   }],
-  ['PATCH', '/api/batches/:id/items/:itemId', ({ id, itemId, body }) => {
+  ['PATCH', '/api/batches/:id/items/:itemId', ({ id, itemId, body, user }) => {
     const b = mustBatch(id);
     const it = b.items.find((x) => x.id === Number(itemId));
     if (!it) throw new Error('条目不存在');
@@ -282,16 +290,35 @@ const routes = [
       const m = body.manual;
       // 多环境人工打分：gsb 为 B 相对 A 的五档分数（-1 A 明显更好 … 1 B 明显更好），pref 由它推出，供筛选与胜率统计
       const gsb = 'gsb' in m ? (GSB.includes(Number(m.gsb)) && m.gsb !== null && m.gsb !== '' ? Number(m.gsb) : null) : it.manual?.gsb ?? null;
+      // 多人协作：同一条后改的覆盖先改的，记下最后修改人和时间
       it.manual = {
         gsb,
         pref: 'gsb' in m ? gsbPref(gsb) : 'pref' in m ? (['A', 'B', 'C', 'D', 'same'].includes(m.pref) ? m.pref : null) : it.manual?.pref ?? null,
         rating: 'rating' in m ? (['good', 'ok', 'bad'].includes(m.rating) ? m.rating : null) : it.manual?.rating ?? null,
         note: 'note' in m ? String(m.note ?? '') : it.manual?.note ?? '',
+        by: user,
+        at: new Date().toISOString(),
       };
       b.summary = null;
     }
     store.save(b);
-    return { ok: true };
+    return { ok: true, manual: it.manual };
+  }],
+  // 轻量同步：只返回 since 之后改过的人工标注，协作时每几秒拉一次，不用整批重新下载
+  ['GET', '/api/batches/:id/manual', ({ id, query }) => {
+    const b = mustBatch(id);
+    const since = query.get('since') || '';
+    return { now: new Date().toISOString(), items: b.items.filter((i) => i.manual?.at && i.manual.at > since).map((i) => ({ id: i.id, manual: i.manual })) };
+  }],
+  ['GET', '/api/share', () => shareView()],
+  ['POST', '/api/share', async ({ body }) => {
+    const cfg = loadConfig();
+    const cur = cfg.share || {};
+    cfg.share = { enabled: !!body.enabled, token: body.regenerate || !cur.token ? share.newToken() : cur.token };
+    writeConfig(cfg);
+    const ips = await applyShare();
+    if (cfg.share.enabled && !ips.length) throw new Error('没有找到可用的局域网地址，请确认电脑已连上公司网络');
+    return shareView();
   }],
   ['POST', '/api/batches/:id/capture', ({ id, body }) => ({ queued: capture.enqueue(id, pickChats(mustBatch(id), body)) })],
   ['POST', '/api/batches/:id/capture/cancel', ({ id }) => (capture.cancel(id), { ok: true })],
@@ -336,50 +363,82 @@ function match(method, pathname) {
   return null;
 }
 
-const server = http
-  .createServer(async (req, res) => {
-    const url = new URL(req.url, `http://${HOST}`);
-    const pathname = url.pathname;
-    try {
-      // 导出：直接返回文件
-      const exp = pathname.match(/^\/api\/batches\/([^/]+)\/export(\.jsonl)?$/);
-      if (req.method === 'GET' && exp) {
-        const b = mustBatch(decodeURIComponent(exp[1]));
-        const ids = url.searchParams.get('ids')?.split(',').filter(Boolean).map(Number);
-        const name = encodeURIComponent(b.name);
-        if (exp[2]) {
-          res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Content-Disposition': `attachment; filename*=UTF-8''${name}.jsonl` });
-          return res.end(exportJsonl(b, ids?.length ? ids : null));
-        }
-        const fields = url.searchParams.has('fields') ? new Set((url.searchParams.get('fields') || '').split(',').filter(Boolean)) : null;
-        const buf = await exportBatch(b, ids?.length ? ids : null, fields, { quality: url.searchParams.get('quality') === 'preview' ? 'preview' : 'full' });
-        res.writeHead(200, {
-          'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-          'Content-Disposition': `attachment; filename*=UTF-8''${name}.xlsx`,
-        });
-        return res.end(Buffer.from(buf));
+// 协作者（局域网访问）能用的接口：查看、人工标注、导出、看谁在线。其余（设置、Cookie、建批次、截图、模型评估、删除）只有发起人能用
+const GUEST_OK = [
+  ['GET', /^\/api\/status$/], ['GET', /^\/api\/batches$/], ['GET', /^\/api\/batches\/[^/]+$/], ['GET', /^\/api\/batches\/[^/]+\/manual$/],
+  ['PATCH', /^\/api\/batches\/[^/]+\/items\/\d+$/], ['GET', /^\/api\/batches\/[^/]+\/export(\.jsonl)?$/],
+];
+const guestAllowed = (method, pathname) =>
+  (method === 'GET' && (pathname === '/' || pathname === '/app.js' || pathname.startsWith('/batches/'))) || GUEST_OK.some(([m, re]) => m === method && re.test(pathname));
+
+const handler = (role) => async (req, res) => {
+  const url = new URL(req.url, `http://${HOST}`);
+  const pathname = url.pathname;
+  try {
+    if (role === 'guest') {
+      const token = loadConfig().share?.token || '';
+      const q = url.searchParams.get('token');
+      // 打开分享链接：校验口令后写入 Cookie，再跳回干净的地址（避免口令留在地址栏里被转发）
+      if (q && share.sameToken(q, token)) {
+        res.writeHead(302, { 'Set-Cookie': `${share.COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`, Location: '/' });
+        return res.end();
       }
-      const m = match(req.method, pathname);
-      if (m) {
-        const body = ['POST', 'PATCH'].includes(req.method) ? await readBody(req) : {};
-        return send(res, 200, await m.handler({ ...m.params, body }));
+      if (!loadConfig().share?.enabled || !share.sameToken(share.cookieToken(req), token)) {
+        if (pathname === '/') return res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' }), res.end('<p style="font:15px sans-serif;padding:40px">需要发起人给的分享链接才能打开（链接可能已失效或协作已关闭）。</p>');
+        return send(res, 401, { error: '需要分享链接' });
       }
-      if (req.method === 'GET' && pathname === '/') return serveFile(res, path.join(ROOT, 'public', 'index.html'));
-      if (req.method === 'GET' && pathname === '/app.js') return serveFile(res, path.join(ROOT, 'public', 'app.js'));
-      if (req.method === 'GET' && pathname.startsWith('/batches/')) {
-        const abs = path.resolve(store.BATCH_ROOT, '.' + decodeURIComponent(pathname).slice('/batches'.length));
-        if (!abs.startsWith(store.BATCH_ROOT + path.sep) || abs.endsWith('.json')) return send(res, 403, { error: 'forbidden' });
-        return serveFile(res, abs);
-      }
-      send(res, 404, { error: 'not found' });
-    } catch (e) {
-      send(res, e.code === 404 ? 404 : 400, { error: e.message, cookie: e instanceof lp.CookieError || undefined });
+      if (!guestAllowed(req.method, pathname)) return send(res, 403, { error: '只有发起人可以做这个操作' });
     }
-  })
-  .listen(PORT, HOST, () => console.log(`已启动：http://${HOST}:${PORT}`));
+    let user = '';
+    try {
+      user = decodeURIComponent(req.headers['x-labeler'] || '').trim().slice(0, 30);
+    } catch {}
+    share.touch(user, role, Number(req.headers['x-viewing']) || null);
+    const ctx = { role, user: user || (role === 'owner' ? '发起人' : '协作者') };
+    // 导出：直接返回文件
+    const exp = pathname.match(/^\/api\/batches\/([^/]+)\/export(\.jsonl)?$/);
+    if (req.method === 'GET' && exp) {
+      const b = mustBatch(decodeURIComponent(exp[1]));
+      const ids = url.searchParams.get('ids')?.split(',').filter(Boolean).map(Number);
+      const name = encodeURIComponent(b.name);
+      if (exp[2]) {
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Content-Disposition': `attachment; filename*=UTF-8''${name}.jsonl` });
+        return res.end(exportJsonl(b, ids?.length ? ids : null));
+      }
+      const fields = url.searchParams.has('fields') ? new Set((url.searchParams.get('fields') || '').split(',').filter(Boolean)) : null;
+      const buf = await exportBatch(b, ids?.length ? ids : null, fields, { quality: url.searchParams.get('quality') === 'preview' ? 'preview' : 'full' });
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename*=UTF-8''${name}.xlsx`,
+      });
+      return res.end(Buffer.from(buf));
+    }
+    const m = match(req.method, pathname);
+    if (m) {
+      const body = ['POST', 'PATCH'].includes(req.method) ? await readBody(req) : {};
+      return send(res, 200, await m.handler({ ...m.params, body, query: url.searchParams, ...ctx }));
+    }
+    if (req.method === 'GET' && pathname === '/') return serveFile(res, path.join(ROOT, 'public', 'index.html'));
+    if (req.method === 'GET' && pathname === '/app.js') return serveFile(res, path.join(ROOT, 'public', 'app.js'));
+    if (req.method === 'GET' && pathname.startsWith('/batches/')) {
+      const abs = path.resolve(store.BATCH_ROOT, '.' + decodeURIComponent(pathname).slice('/batches'.length));
+      if (!abs.startsWith(store.BATCH_ROOT + path.sep) || abs.endsWith('.json')) return send(res, 403, { error: 'forbidden' });
+      return serveFile(res, abs);
+    }
+    send(res, 404, { error: 'not found' });
+  } catch (e) {
+    send(res, e.code === 404 ? 404 : 400, { error: e.message, cookie: e instanceof lp.CookieError || undefined });
+  }
+};
+
+const server = http.createServer(handler('owner')).listen(PORT, HOST, () => console.log(`已启动：http://${HOST}:${PORT}`));
+// 上次开着协作的话，启动时恢复局域网监听
+const applyShare = () => share.bindLan(!!loadConfig().share?.enabled, PORT, handler('guest'));
+applyShare().then((ips) => ips.length && console.log(`局域网协作已开启：${ips.join('、')}`));
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => {
   server.close();
+  await share.closeAll();
   await capture.shutdown();
   await login.shutdown();
   process.exit(0);
