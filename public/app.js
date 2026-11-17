@@ -25,6 +25,8 @@ const S = {
   cfg: null,
   me: localStorage.getItem('lpName') || '', // 标注人名字，多人协作时记录谁改的
   evalN: Math.max(1, Number(localStorage.getItem('lpEvalN')) || 100), // 「只评前 N 条」的 N
+  evalFrom: Math.max(1, Number(localStorage.getItem('lpEvalFrom')) || 1), // 「第 x 到 y 条」的起止（卡片上的序号）
+  evalTo: Math.max(1, Number(localStorage.getItem('lpEvalTo')) || 100),
   role: 'owner', // owner=发起人（本机）；guest=通过分享链接进来的同事
   share: { enabled: false, online: [] },
   manualSince: '',
@@ -753,6 +755,9 @@ function renderTools() {
   const n = selIds().length;
   const mode = evalMode();
   const unevaluated = b.items.filter((i) => needsEval(i, mode)).length;
+  // 范围评估：按卡片上的序号（第几条）取，只算这个范围内还没评的
+  const rangeItems = () => S.cur.items.filter((i) => i.id >= S.evalFrom && i.id <= S.evalTo);
+  const rangeCount = rangeItems().filter((i) => needsEval(i, mode)).length;
   const evalBusy = b.evalPending || b.items.some((i) => [i.eval, ...Object.values(i.envEvals || {})].some((e) => ['queued', 'running'].includes(e?.status)));
   const modeSel = multi()
     ? `<select id="evMode" aria-label="评估方式">${[['compare', `对比评估（${b.envs.map((e, k) => L[k]).join(' vs ')}）`], ...b.envs.map((e, k) => [String(e.id), `单评 ${L[k]} ${e.name}`])]
@@ -768,6 +773,10 @@ function renderTools() {
       <button type="button" data-a="evalRest" class="pri" ${unevaluated ? '' : 'disabled'}>批量评估待评估（${unevaluated}）</button>
       <span class="hint">或只评前</span><input id="evN" type="number" min="1" value="${S.evalN}" style="width:72px" aria-label="只评估前几条" />
       <button type="button" data-a="evalFirst" ${unevaluated ? '' : 'disabled'}>条待评估</button>
+      <span class="hint">或第</span><input id="evFrom" type="number" min="1" value="${S.evalFrom}" style="width:72px" aria-label="从第几条开始" />
+      <span class="hint">到</span><input id="evTo" type="number" min="1" value="${S.evalTo}" style="width:72px" aria-label="到第几条结束" />
+      <span class="hint">条</span>
+      <button type="button" data-a="evalRange" ${rangeCount ? '' : 'disabled'}>评估这个范围（${rangeCount} 条待评）</button>
       <button type="button" data-a="cancelEval" ${evalBusy ? '' : 'disabled'}>取消评估</button></div>
     <div class="grp"><span>分析 / 导出</span>
       <button type="button" class="owner-only" data-a="summary" ${b.summary?.status === 'running' ? 'disabled' : ''}>整体分析（${n ? `选中 ${n}` : '全部'}）</button>
@@ -786,6 +795,17 @@ function renderTools() {
     localStorage.setItem('lpEvalN', String(S.evalN));
     renderTools();
   };
+  for (const [id, k] of [['evFrom', 'evalFrom'], ['evTo', 'evalTo']]) {
+    if (!$(id)) continue;
+    $(id).onchange = (e) => {
+      S[k] = Math.max(1, Math.round(Number(e.target.value) || 1));
+      // 起止填反了自动对调
+      if (S.evalFrom > S.evalTo) k === 'evalFrom' ? (S.evalTo = S.evalFrom) : (S.evalFrom = S.evalTo);
+      localStorage.setItem('lpEvalFrom', String(S.evalFrom));
+      localStorage.setItem('lpEvalTo', String(S.evalTo));
+      renderTools();
+    };
+  }
 }
 
 // 评估方式：compare = 多环境对比（A vs B）；环境 id = 只评这一个环境（单环境打分，结果另存，不覆盖对比）
@@ -815,6 +835,14 @@ function runAction(a) {
     cancelShoot: () => act(() => api('POST', `${p}/capture/cancel`), '已取消排队'),
     evalSel: () => act(() => api('POST', `${p}/eval`, { ids, envId: modeEnv() }), (r) => `已提交${modeLabel()} ${r.queued} 条（仅截图成功的会评估）`),
     evalRest: () => act(() => api('POST', `${p}/eval`, { ids: S.cur.items.filter((i) => needsEval(i, evalMode())).map((i) => i.id), envId: modeEnv() }), (r) => `已提交${modeLabel()} ${r.queued} 条`),
+    // 只评某个序号区间：按卡片上的编号取，跳过已有结果的
+    evalRange: () => {
+      const mode = evalMode();
+      const targets = S.cur.items.filter((i) => i.id >= S.evalFrom && i.id <= S.evalTo && needsEval(i, mode)).sort((a, b) => a.id - b.id);
+      if (!targets.length) return toast('这个范围内没有待评估的条目');
+      return act(() => api('POST', `${p}/eval`, { ids: targets.map((i) => i.id), envId: modeEnv() }),
+        (r) => `已提交${modeLabel()} ${r.queued} 条（第 ${S.evalFrom}～${S.evalTo} 条里未评估的）`);
+    },
     // 只评前 N 条待评估：按评估顺序（从上到下）取，跳过已有结果的
     evalFirst: () => {
       const mode = evalMode();
