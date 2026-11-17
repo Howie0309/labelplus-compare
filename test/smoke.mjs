@@ -90,6 +90,7 @@ try {
   assert.equal(ev.pref, 'B');
   // 对比评估以模型给的 GSB 为准，不再自动算总分；展示时偏好、结论在前，其余字段（含自定义字段）按模型输出顺序
   assert.equal(ev.gsb, 0.5);
+  assert.ok(ev.data && ev.data.gsb === 0.5);
   assert.equal(ev.scores, null);
   assert.match(ev.text, /^\*\*偏好\*\*：\+0\.5，B（策略-genui-联调）略好\n\n\*\*结论\*\*：B 更好/);
   assert.ok(ev.text.indexOf('risk_note') > ev.text.indexOf('意图') && ev.text.indexOf('risk_note') < ev.text.indexOf('维度明细'));

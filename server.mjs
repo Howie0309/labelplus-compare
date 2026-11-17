@@ -66,7 +66,7 @@ function rerenderEvals() {
       for (const e of [it.eval, ...Object.values(it.envEvals || {})]) {
         if (e?.status !== 'done' || !e.raw) continue;
         const r = normalizeEval(e.raw, names(e), fields);
-        const next = { kind: r.kind, text: r.text, dims: r.dims, scores: r.scores, pref: r.pref, gsb: r.gsb, score: r.score };
+        const next = { kind: r.kind, text: r.text, dims: r.dims, scores: r.scores, pref: r.pref, gsb: r.gsb, score: r.score, data: r.data ?? null };
         if (Object.entries(next).some(([k, v]) => JSON.stringify(v ?? null) !== JSON.stringify(e[k] ?? null))) {
           Object.assign(e, next);
           changed = true;
@@ -237,6 +237,7 @@ const routes = [
     cookie: !!loadConfig().cookie,
     login: login.state,
     share: { enabled: !!loadConfig().share?.enabled, online: share.online() },
+    display: fieldsOf(loadConfig()), // 字段映射与显示名，前端据此按字段分块渲染
     capture: { ...capture.state, queue: capture.pending() },
   })],
   ['POST', '/api/capture/resume', () => (capture.resume(), { ok: true })],
