@@ -405,6 +405,12 @@ function renderParsed() {
         <button type="button" class="sm" data-up="${id}" ${p.order[0] === id ? 'disabled' : ''}>上移</button></div>`;
     }).join('')}
     <fieldset style="border:none;padding:0;margin:12px 0 0">
+      <legend class="hint">页面类型（按链接末段自动识别，可改）</legend>
+      <label><input type="radio" name="nDev" value="pc" ${p.device === 'pc' ? 'checked' : ''} /> PC 网页（1440）</label>
+      <label style="margin-left:16px"><input type="radio" name="nDev" value="mobile" ${p.device !== 'pc' ? 'checked' : ''} /> 手机（WISE 430）</label>
+      <span class="hint" style="margin-left:8px">${p.device === 'pc' ? '链接末段 131，按 PC 截' : p.device === 'mobile' ? '链接末段 132，按手机截' : '链接里没有末段，默认按手机截'}</span>
+    </fieldset>
+    <fieldset style="border:none;padding:0;margin:12px 0 0">
       <legend class="hint">从哪一条开始</legend>
       <label><input type="radio" name="nFrom" value="first" ${p.fromFirst ? 'checked' : ''} /> 评估的第 1 条</label>
       <label style="margin-left:16px"><input type="radio" name="nFrom" value="link" ${p.fromFirst ? '' : 'checked'} /> 链接这一条（第 ${p.pos} 条）</label>
@@ -437,7 +443,7 @@ function renderParsed() {
   $('nGo').onclick = () => act(async () => {
     const scope = document.querySelector('input[name=nScope]:checked').value;
     const limit = scope === 'n' ? Number($('nN').value) || 1 : Number(scope);
-    const b = await api('POST', '/api/batches', { link: p.link, name: $('nName').value, envIds: on, limit, trim: $('nTrim').checked, fromFirst: p.fromFirst });
+    const b = await api('POST', '/api/batches', { link: p.link, name: $('nName').value, envIds: on, limit, trim: $('nTrim').checked, fromFirst: p.fromFirst, device: document.querySelector('input[name=nDev]:checked')?.value });
     S.parsed = null;
     await openBatch(b.id);
     return b;
@@ -670,7 +676,7 @@ function renderBatch(rebuild) {
     $('grid').onclick = onGridClick;
   }
   $('bName').textContent = b.name;
-  $('bMeta').innerHTML = `${b.envs.map((e, i) => envTag(i, e.name)).join('')} evaluation ${b.source.evaluationId} · 创建于 ${new Date(b.createdAt).toLocaleString('zh-CN')}`;
+  $('bMeta').innerHTML = `${b.envs.map((e, i) => envTag(i, e.name)).join('')} ${b.source.device === 'pc' ? '<span class="tag">PC</span>' : '<span class="tag">手机</span>'} evaluation ${b.source.evaluationId} · 创建于 ${new Date(b.createdAt).toLocaleString('zh-CN')}`;
   renderEnum();
   const c = b.counts;
   renderStats(b);

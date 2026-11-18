@@ -271,10 +271,11 @@ const routes = [
   })],
   ['POST', '/api/capture/resume', () => (capture.resume(), { ok: true })],
   ['POST', '/api/parse', async ({ body }) => {
-    const { chatId, evaluationId } = parseSource(body);
+    const src = parseSource(body);
+    const { chatId, evaluationId } = src;
     const info = await lp.chatInfo(loadConfig().cookie, chatId, evaluationId);
     return {
-      chatId, evaluationId, pos: info.pos, total: info.total, turns: info.turns,
+      chatId, evaluationId, device: src.device || 'mobile', pos: info.pos, total: info.total, turns: info.turns,
       envs: info.pages.map((p) => ({ id: p.envId, name: p.envName })),
       batches: store.all().filter((b) => b.source.evaluationId === evaluationId).map(brief),
     };
@@ -295,7 +296,7 @@ const routes = [
     const limit = Math.max(0, Math.round(Number(body.limit) || 0));
     const b = store.create({
       name: String(body.name || '').trim(),
-      source: { link: String(body.link).trim(), evaluationId, startChatId: chatId, limit, envIds: envs.map((e) => e.id), trim: body.trim !== false },
+      source: { link: String(body.link).trim(), evaluationId, startChatId: chatId, limit, envIds: envs.map((e) => e.id), trim: body.trim !== false, device: body.device === 'pc' || body.device === 'mobile' ? body.device : src.device || 'mobile' },
       envs,
     });
     capture.startEnumerate(b.id);

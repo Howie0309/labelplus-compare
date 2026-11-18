@@ -69,6 +69,9 @@ try {
 
   const parsed = await json('POST', '/api/parse', { link: lp.link });
   assert.equal(parsed.total, 3);
+  // 链接末段决定 PC / 手机：131=PC，132=手机
+  assert.equal(parsed.device, 'mobile');
+  assert.equal((await json('POST', '/api/parse', { link: lp.link.replace('/132', '/131') })).device, 'pc');
   assert.deepEqual(parsed.envs.map((e) => e.id), [11, 22]);
 
   // A=线上(11)，B=联调(22)；只取前 2 段对话（共 3 轮）
@@ -169,6 +172,9 @@ try {
   const b2 = (await json('POST', '/api/batches', { link: lp.link.replace('/101/', '/103/'), envIds: [11], limit: 1, fromFirst: true })).id;
   const first = await until(async () => (await json('GET', `/api/batches/${b2}`)).items[0], 20000, '从第 1 条建批次');
   assert.equal(first.chatId, 101);
+  // 指定 PC 建批次：设备类型要存进批次
+  const b3 = (await json('POST', '/api/batches', { link: lp.link.replace('/132', '/131'), envIds: [11], limit: 1, device: 'pc' })).id;
+  assert.equal((await (await call('GET', `/api/batches/${b3}`)).json()).source.device, 'pc');
   await call('DELETE', `/api/batches/${b2}`);
 
   // 局域网协作：开启后同事凭分享链接访问，只能看、标注、导出；标注记录修改人
