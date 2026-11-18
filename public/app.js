@@ -912,6 +912,8 @@ function cardHtml(it) {
   const ev = it.eval?.status ? `<span class="badge ${it.eval.status === 'failed' ? 'failed' : it.eval.status === 'done' ? 'done' : ''}">${EV[it.eval.status]}</span>` : '';
   const mp = modelPref(it);
   const scores = envs.map((_, k) => modelScore(it, k)).filter((x) => typeof x === 'number');
+  const mineM = myMark(it);
+  const nMark = annotators(it).length;
   return `<div class="it ${sel ? 'sel' : ''}" data-id="${it.id}">
     <input type="checkbox" class="ck" ${sel ? 'checked' : ''} aria-label="选择 ${esc(it.query)}" />
     <button type="button" class="th" data-open="${it.id}" aria-label="查看 ${esc(it.query)}">${thumbs}</button>
@@ -924,11 +926,13 @@ function cardHtml(it) {
         ${scores.length ? `<span class="score">${scores.join(' : ')}</span>` : ''}
         ${envs.length > 1 ? envs.map((e, k) => { const x = it.envEvals?.[e.id]; return x?.status === 'done' && typeof x.score === 'number' ? `<span class="tag" title="单环境评估">单评 ${L[k]} <b class="score">${x.score}</b></span>` : x?.status === 'failed' ? `<span class="tag err">单评 ${L[k]} 失败</span>` : ['queued', 'running'].includes(x?.status) ? `<span class="tag">单评 ${L[k]}…</span>` : ''; }).join('') : ''}
         ${(() => {
-          const mineM = myMark(it), n = annotators(it).length;
           const val = typeof mineM?.gsb === 'number' ? gsbTag(mineM.gsb) : mineM?.rating ? RT[mineM.rating] : '';
-          return val || n ? `<span class="tag" title="${annotators(it).map((k) => `${k} ${markText(it.manuals[k])}`).join(' / ')}">人工 ${val}${n > 1 ? `（${n} 人，均 ${fmtG(it.manual?.gsb ?? 0)}）` : ''}${diverge(it) ? ' <span class="warn" title="多人标注有分歧">●</span>' : ''}</span>` : '';
+          if (!val) {
+            // 我还没标：别人标过就提示一句，不算成我的标注
+            return nMark ? `<span class="tag" style="background:#f3f4f6;color:#9ca3af" title="${esc(annotators(it).map((k) => `${k} ${markText(it.manuals[k])}`).join(' / '))}">他人已标 ${nMark} 人${diverge(it) ? ' · <span class="warn">有分歧</span>' : ''}</span>` : '';
+          }
+          return `<span class="tag" title="${esc(annotators(it).map((k) => `${k} ${markText(it.manuals[k])}`).join(' / '))}">人工 ${val}${nMark > 1 ? `（${nMark} 人，均 ${fmtG(it.manual?.gsb ?? 0)}）` : ''}${diverge(it) ? ' <span class="warn" title="多人标注有分歧">●</span>' : ''}</span>`;
         })()}
-        ${it.manual?.rating ? `<span class="tag">人工：${RT[it.manual.rating]}</span>` : ''}
       </div>
       ${it.error ? `<div class="hint ${it.status === 'failed' ? 'err' : 'warn'}" style="margin-top:4px">${esc(it.error)}</div>` : ''}
       ${it.eval?.status === 'failed' ? `<div class="hint err" style="margin-top:4px">评估失败：${esc(it.eval.error)}</div>` : ''}
