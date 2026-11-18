@@ -33,7 +33,7 @@ function buildId() {
 }
 
 // ---------- 配置 ----------
-const CONFIG_KEYS = ['baseUrl', 'model', 'reasoningEffort', 'judgePrompt', 'singlePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries',
+const CONFIG_KEYS = ['baseUrl', 'model', 'reasoningEffort', 'allowNames', 'judgePrompt', 'singlePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries',
   'field_gsb', 'field_preference', 'field_summary', 'field_dimensions', 'fieldLabels'];
 const FIELD_KEYS = CONFIG_KEYS.filter((k) => k.startsWith('field'));
 const DEFAULTS = { captureConcurrency: 3, captureRetries: 2, evalConcurrency: 3, evalRetries: 2, reasoningEffort: 'auto' };
@@ -112,6 +112,21 @@ async function refreshCookie() {
   return true;
 }
 capture.init(loadConfig, { refresh: refreshCookie });
+
+// 可标注名单：留空=所有拿到分享链接的人都能标；填了名字就只允许这些人标，其余只能看
+function allowList() {
+  return String(loadConfig().allowNames || '').split(/[\n,，]/).map((x) => x.trim()).filter(Boolean);
+}
+function canWrite(role, req) {
+  if (role === 'owner') return true;
+  const list = allowList();
+  if (!list.length) return true;
+  let name = '';
+  try {
+    name = decodeURIComponent(req.headers['x-labeler'] || '').trim();
+  } catch {}
+  return list.includes(name);
+}
 
 function shareView() {
   const s = loadConfig().share || {};
@@ -241,9 +256,11 @@ const routes = [
     capture.resume();
     return { ok: true };
   }],
-  ['GET', '/api/status', ({ role }) => ({
+  ['GET', '/api/status', ({ role, req }) => ({
     labelplus: true,
     role,
+    canWrite: canWrite(role, req),
+    allowNames: allowList(),
     build: buildId(),
     chrome: process.platform !== 'darwin' || fs.existsSync(CHROME),
     cookie: !!loadConfig().cookie,
@@ -314,12 +331,13 @@ const routes = [
     capture.extend(b.id, { chatId, more: Math.max(0, Math.round(Number(body.more) || 0)) });
     return brief(b);
   }],
-  ['PATCH', '/api/batches/:id/items/:itemId', ({ id, itemId, body, user }) => {
+  ['PATCH', '/api/batches/:id/items/:itemId', ({ id, itemId, body, user, role, req }) => {
     const b = mustBatch(id);
     const it = b.items.find((x) => x.id === Number(itemId));
     if (!it) throw new Error('条目不存在');
     if (body.manual) {
       const m = body.manual;
+      if (!canWrite(role, req)) throw Object.assign(new Error('你不在可标注名单里，只能查看和导出'), { code: 403 });
       // 多人分别标注：按标注人分开存，分数取平均作为汇总；同一个人多次修改覆盖自己的那份
       const gsbIn = 'gsb' in m;
       const gsb = gsbIn ? (GSB.includes(Number(m.gsb)) && m.gsb !== null && m.gsb !== '' ? Number(m.gsb) : null) : undefined;
@@ -442,7 +460,7 @@ const handler = (role) => async (req, res) => {
       user = decodeURIComponent(req.headers['x-labeler'] || '').trim().slice(0, 30);
     } catch {}
     share.touch(user, role, Number(req.headers['x-viewing']) || null);
-    const ctx = { role, user: user || (role === 'owner' ? '发起人' : '协作者') };
+    const ctx = { role, req, user: user || (role === 'owner' ? '发起人' : '协作者') };
     // 导出：直接返回文件
     const exp = pathname.match(/^\/api\/batches\/([^/]+)\/export(\.jsonl)?$/);
     if (req.method === 'GET' && exp) {
@@ -475,7 +493,7 @@ const handler = (role) => async (req, res) => {
     }
     send(res, 404, { error: 'not found' });
   } catch (e) {
-    send(res, e.code === 404 ? 404 : 400, { error: e.message, cookie: e instanceof lp.CookieError || undefined });
+    send(res, [403, 404].includes(e.code) ? e.code : 400, { error: e.message, cookie: e instanceof lp.CookieError || undefined });
   }
 };
 

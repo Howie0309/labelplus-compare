@@ -240,7 +240,10 @@
     <span class="spacer"></span><button type="button" id="shRegen" class="sm" title="旧链接立即失效">重新生成链接</button>
   </div>
   <div id="shBox" class="hint" style="margin-top:6px"></div>
-  <p class="hint" style="margin:4px 0 0">同事只能查看、人工标注和导出；截图、模型评估、设置只有你能操作（用的是你的 Cookie 和模型额度）。同一条多人标注时后改的覆盖先改的，并记录修改人。你的电脑需要保持开机、服务不退出。首次开启 macOS 可能弹出「是否允许 node 接受传入连接」，请点允许。</p>
+  <label class="f" for="sAllow">可标注名单（留空 = 拿到链接的人都能标；填了就只允许这些人标，其余只能查看和导出）</label>
+  <textarea id="sAllow" rows="3" placeholder="每行一个名字，也可以逗号分隔，例如：&#10;朱昱昊&#10;王宇&#10;白宇龙"></textarea>
+  <p class="hint" style="margin:2px 0 0">名字以页面右上角「设置名字」填的为准，要让他们先填好名字再标。名单只约束标注；查看、导出不受影响。这个方式依赖名字填写，不是严格的身份鉴权。</p>
+  <p class="hint" style="margin:4px 0 0">同事只能查看、人工标注和导出；截图、模型评估、设置只有你能操作（用的是你的 Cookie 和模型额度）。同一条多人标注各存各的，汇总取平均。你的电脑需要保持开机、服务不退出。首次开启 macOS 可能弹出「是否允许 node 接受传入连接」，请点允许。</p>
   <h3 style="font-size:14px;margin:16px 0 0">并发与重试</h3>
   <div class="row" style="margin-top:8px">
     <label for="sCConc" class="hint">截图并发</label><input id="sCConc" type="number" min="1" max="6" style="width:64px" />

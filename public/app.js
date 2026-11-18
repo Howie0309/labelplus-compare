@@ -30,6 +30,7 @@ const S = {
   sinced: '', // 增量刷新游标（上次拉到的服务端时间）
   build: '', // 服务端前端版本号，变了自动刷新
   role: 'owner', // owner=发起人（本机）；guest=通过分享链接进来的同事
+  canWrite: true, // 协作者是否在可标注名单里；不在就只能查看
   share: { enabled: false, online: [] },
   manualSince: '',
 };
@@ -155,6 +156,7 @@ async function refreshStatus() {
     }
   }
   S.role = s.role || 'owner';
+  S.canWrite = s.canWrite !== false;
   S.share = s.share || { enabled: false, online: [] };
   document.body.classList.toggle('guest', S.role === 'guest');
   renderPresence();
@@ -234,6 +236,7 @@ async function openSettings() {
   const c = (S.cfg = await api('GET', '/api/config'));
   $('sBase').value = c.baseUrl;
   $('sModel').value = c.model;
+  $('sAllow').value = c.allowNames || '';
   $('sEffort').value = c.reasoningEffort || 'auto';
   $('sKey').value = '';
   $('sKey').placeholder = c.hasKey ? `已保存 ${c.keyMask}（留空则不修改）` : '未设置';
@@ -265,7 +268,7 @@ async function saveSettings() {
     captureConcurrency: Number($('sCConc').value), captureRetries: Number($('sCRetry').value),
     evalConcurrency: Number($('sConc').value), evalRetries: Number($('sEvalRetry').value),
     field_gsb: $('fGsb').value, field_preference: $('fPref').value, field_summary: $('fSum').value, field_dimensions: $('fDims').value,
-    fieldLabels: $('fLabels').value,
+    fieldLabels: $('fLabels').value, allowNames: $('sAllow').value,
   });
 }
 $('btnSettings').onclick = openSettings;
@@ -1138,6 +1141,7 @@ document.addEventListener('keydown', (e) => {
 async function setManual(k, v) {
   const it = curItem();
   if (!it) return;
+  if (!S.canWrite) return toast('你不在可标注名单里，只能查看', true);
   const mineM = myMark(it);
   const val = mineM?.[k] === v ? null : v;
   it.manuals ??= {};
@@ -1191,7 +1195,7 @@ function renderViewer(force) {
   const SUB = { '-1': '明显', '-0.5': '略好', 0: '持平', 0.5: '略好', 1: '明显' };
   const manual = multi()
     ? `<div class="gsb-ends"><span class="a">← A ${esc(envs[0]?.name)} 更好</span><span class="b">B ${esc(envs[1]?.name)} 更好 →</span></div>
-      <div class="gsb" role="group" aria-label="人工打分">${GSB.map((g, i) => `<button type="button" data-gsb="${g}" class="${g < 0 ? 'A' : g > 0 ? 'B' : 'S'}" aria-pressed="${m.gsb === g}"
+      <div class="gsb" role="group" aria-label="人工打分" ${S.canWrite ? '' : 'style="opacity:.5;pointer-events:none"'}>${GSB.map((g, i) => `<button type="button" data-gsb="${g}" class="${g < 0 ? 'A' : g > 0 ? 'B' : 'S'}" aria-pressed="${m.gsb === g}"
         title="${esc(g === 0 ? '两者相当' : `${g < 0 ? envs[0]?.name : envs[1]?.name} ${Math.abs(g) === 1 ? '明显更好' : '略好'}`)}（快捷键 ${i + 1}）"><b>${fmtG(g)}</b><small>${SUB[g]}</small></button>`).join('')}</div>`
     : `<div class="row rate" role="group" aria-label="人工评级">${Object.entries(RT).map(([k, t], i) => `<button type="button" data-rating="${k}" aria-pressed="${m.rating === k}">${t}（${i + 1}）</button>`).join('')}</div>`;
   $('vside').innerHTML = `
@@ -1209,14 +1213,14 @@ function renderViewer(force) {
       <button type="button" id="vShoot" class="owner-only" title="整段对话重截，会清空该对话各轮的评估与人工标注">重截这段对话</button>
       <button type="button" id="vEval" class="pri owner-only" ${it.status === 'done' ? '' : 'disabled'}>${multi() ? (ev?.text ? '重新对比评估（E）' : '对比评估（E）') : ev?.text ? '重新评估（E）' : '模型评估（E）'}</button></div>
 
-    <h4 style="margin:16px 0 6px">人工${multi() ? '偏好' : '评级'} <span class="hint" style="font-weight:400">快捷键 ${multi() ? '1–5' : '1–3'}</span></h4>
+    <h4 style="margin:16px 0 6px">人工${multi() ? '偏好' : '评级'} <span class="hint" style="font-weight:400">快捷键 ${multi() ? '1–5' : '1–3'}</span>${S.canWrite ? '' : ' <span class="warn">你不在可标注名单里，只能查看</span>'}</h4>
     ${manual}
     ${m.at ? `<p class="hint" style="margin:4px 0 0">我的标注${m.by && m.by !== S.me ? `（记在 ${esc(m.by)} 名下）` : ''} · ${new Date(m.at).toLocaleString('zh-CN')} 修改</p>` : ''}
     ${othersMarks(it).length ? `<details style="margin-top:4px"><summary class="hint">其他人也标了（${othersMarks(it).length} 人）${diverge(it) ? ' · <span class="warn">有分歧</span>' : ''}</summary>
       <ul class="ctx">${othersMarks(it).map(([k, x]) => `<li><b>${esc(k)}</b>：${esc(markText(x))}${x.note ? `，备注：${esc(x.note)}` : ''}</li>`).join('')}</ul></details>` : ''}
     ${(S.share.online || []).filter((p) => p.name !== S.me && p.itemId === it.id).map((p) => `<p class="hint warn" style="margin:2px 0 0">${esc(p.name)} 也正在看这一条</p>`).join('')}
     <label class="f" for="vNote">备注</label>
-    <textarea id="vNote" rows="3" placeholder="记录亮点、问题，失焦自动保存">${esc(m.note || '')}</textarea>
+    <textarea id="vNote" rows="3" ${S.canWrite ? '' : 'readonly placeholder="你不在可标注名单里，只能查看"'}>${esc(m.note || '')}</textarea>
 
     <h4 style="margin:16px 0 6px">${multi() ? '对比评估' : '模型评估'}</h4>${evalHtml}
     ${singleHtml ? `<h4 style="margin:16px 0 0">单环境评估</h4><p class="hint" style="margin:2px 0 0">只看这一个环境打分，不和另一个环境比较；与对比评估分开保存。</p>${singleHtml}` : ''}`;

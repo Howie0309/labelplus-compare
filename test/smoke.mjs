@@ -194,6 +194,14 @@ try {
     const sync = await json('GET', `/api/batches/${batchId}/manual?since=`);
     assert.ok(sync.items.find((x) => x.id === second.id).manuals['李四']);
     assert.ok((await json('GET', '/api/status')).share.online.some((p) => p.name === '张三'));
+    // 可标注名单：只允许张三；李四能看不能标
+    await json('POST', '/api/config', { allowNames: '张三' });
+    const gOther = (p, o = {}) => fetch(lan + p, { ...o, headers: { 'Content-Type': 'application/json', Cookie: cookie, 'X-Labeler': encodeURIComponent('李四'), ...(o.headers || {}) } });
+    assert.equal((await (await gOther('/api/status')).json()).canWrite, false);
+    assert.equal((await gOther(`/api/batches/${batchId}/items/${second.id}`, { method: 'PATCH', body: JSON.stringify({ manual: { gsb: 1 } }) })).status, 403);
+    assert.equal((await (await g('/api/status')).json()).canWrite, true);
+    assert.equal((await g(`/api/batches/${batchId}/items/${second.id}`, { method: 'PATCH', body: JSON.stringify({ manual: { gsb: -0.5 } }) })).status, 200);
+    await json('POST', '/api/config', { allowNames: '' });
     await json('POST', '/api/share', { enabled: false });
     assert.ok(await fetch(`${lan}/api/status`, { headers: { Cookie: cookie } }).then(() => false, () => true)); // 关闭后不再监听
   } else console.log('（没有局域网地址，跳过协作测试）');
