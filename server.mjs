@@ -20,6 +20,17 @@ const HOST = '127.0.0.1'; // 只监听本机：服务无鉴权，且配置里有
 const CONFIG_FILE = process.env.LABELPLUS_CONFIG || path.join(ROOT, 'config.json');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg' };
 const CHROME = '/Applications/Google Chrome.app';
+// 前端版本号：public 下文件的修改时间 + 大小。每次请求现算，文件一改，所有已打开的页面（含协作的同事）就会自动刷新
+function buildId() {
+  try {
+    return fs.readdirSync(path.join(ROOT, 'public')).sort().map((f) => {
+      const st = fs.statSync(path.join(ROOT, 'public', f));
+      return `${f}:${st.mtimeMs}:${st.size}`;
+    }).join('|');
+  } catch {
+    return '';
+  }
+}
 
 // ---------- 配置 ----------
 const CONFIG_KEYS = ['baseUrl', 'model', 'reasoningEffort', 'judgePrompt', 'singlePrompt', 'summaryPrompt', 'cacheControl', 'captureConcurrency', 'captureRetries', 'evalConcurrency', 'evalRetries',
@@ -233,6 +244,7 @@ const routes = [
   ['GET', '/api/status', ({ role }) => ({
     labelplus: true,
     role,
+    build: buildId(),
     chrome: process.platform !== 'darwin' || fs.existsSync(CHROME),
     cookie: !!loadConfig().cookie,
     login: login.state,

@@ -28,6 +28,7 @@ const S = {
   evalFrom: Math.max(1, Number(localStorage.getItem('lpEvalFrom')) || 1), // 「第 x 到 y 条」的起止（卡片上的序号）
   evalTo: Math.max(1, Number(localStorage.getItem('lpEvalTo')) || 100),
   sinced: '', // 增量刷新游标（上次拉到的服务端时间）
+  build: '', // 服务端前端版本号，变了自动刷新
   role: 'owner', // owner=发起人（本机）；guest=通过分享链接进来的同事
   share: { enabled: false, online: [] },
   manualSince: '',
@@ -141,6 +142,18 @@ function modelGsb(it) {
 async function refreshStatus() {
   const s = await api('GET', '/api/status').catch(() => null);
   if (!s) return;
+  // 版本变了（发起人更新了工具）：等手头输入结束就自动刷新，协作的同事也一样
+  if (s.build) {
+    if (!S.build) S.build = s.build;
+    else if (s.build !== S.build && !S.reloading) {
+      const typing = ['TEXTAREA', 'INPUT'].includes(document.activeElement?.tagName);
+      if (!typing) {
+        S.reloading = true;
+        toast('工具已更新，页面将在 2 秒后自动刷新');
+        setTimeout(() => location.reload(), 2000);
+      }
+    }
+  }
   S.role = s.role || 'owner';
   S.share = s.share || { enabled: false, online: [] };
   document.body.classList.toggle('guest', S.role === 'guest');
