@@ -121,8 +121,10 @@ function modelScore(it, k) {
 // 我自己在这条上的标注（多人协作时每人一份）；没有则回退到汇总
 const myName = () => S.me || (S.role === 'owner' ? '发起人' : '我'); // 与服务端默认标注人一致
 const myMark = (it) => it.manuals?.[myName()] || (it.manuals ? {} : it.manual) || {};
-const othersMarks = (it) => Object.entries(it.manuals || {}).filter(([k]) => k !== myName());
-const annotators = (it) => Object.keys(it.manuals || {});
+const othersMarks = (it) => Object.entries(it.manuals || {}).filter(([k, m]) => k !== myName() && hasMark(m));
+// 只算真正标过的人（空记录不算）
+const hasMark = (m) => !!m && (typeof m.gsb === 'number' || !!m.rating || (!!m.note && m.note.trim() !== '' && m.note.trim() !== '/'));
+const annotators = (it) => Object.entries(it.manuals || {}).filter(([, m]) => hasMark(m)).map(([k]) => k);
 const diverge = (it) => {
   const gs = annotators(it).map((k) => it.manuals[k]?.gsb).filter((g) => typeof g === 'number');
   return gs.length > 1 && Math.max(...gs) - Math.min(...gs) >= 0.5;
