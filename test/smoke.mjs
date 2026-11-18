@@ -184,11 +184,15 @@ try {
     assert.equal((await (await g('/api/status')).json()).role, 'guest');
     assert.equal((await g(`/api/batches/${batchId}`)).status, 200);
     const pr = await (await g(`/api/batches/${batchId}/items/${second.id}`, { method: 'PATCH', body: JSON.stringify({ manual: { gsb: -1 } }) })).json();
-    assert.deepEqual([pr.manual.gsb, pr.manual.by, pr.manual.note], [-1, '张三', 'smoke']); // 覆盖打分，备注保留
+    // 多人各存一份：张三的打分不覆盖发起人的备注，汇总取平均
+    assert.deepEqual([pr.manuals['张三'].gsb, pr.manuals['发起人'].note, pr.manual.gsb], [-1, 'smoke', -0.25]);
+    const pr2 = await (await g(`/api/batches/${batchId}/items/${second.id}`, { method: 'PATCH', body: JSON.stringify({ manual: { gsb: 0 } }), headers: { 'X-Labeler': encodeURIComponent('李四') } })).json();
+    assert.deepEqual(Object.keys(pr2.manuals).sort(), ['发起人', '张三', '李四']);
+    assert.equal(pr2.manual.gsb, -0.17); // (0.5 - 1 + 0) / 3
     assert.equal((await g('/api/batches', { method: 'POST', body: '{}' })).status, 403);
     assert.equal((await g('/api/share')).status, 403);
     const sync = await json('GET', `/api/batches/${batchId}/manual?since=`);
-    assert.equal(sync.items.find((x) => x.id === second.id).manual.by, '张三');
+    assert.ok(sync.items.find((x) => x.id === second.id).manuals['李四']);
     assert.ok((await json('GET', '/api/status')).share.online.some((p) => p.name === '张三'));
     await json('POST', '/api/share', { enabled: false });
     assert.ok(await fetch(`${lan}/api/status`, { headers: { Cookie: cookie } }).then(() => false, () => true)); // 关闭后不再监听

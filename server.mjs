@@ -308,22 +308,20 @@ const routes = [
     if (!it) throw new Error('条目不存在');
     if (body.manual) {
       const m = body.manual;
-      // 多环境人工打分：gsb 为 B 相对 A 的五档分数（-1 A 明显更好 … 1 B 明显更好），pref 由它推出，供筛选与胜率统计
-      const gsb = 'gsb' in m ? (GSB.includes(Number(m.gsb)) && m.gsb !== null && m.gsb !== '' ? Number(m.gsb) : null) : it.manual?.gsb ?? null;
-      // 多人协作：同一条后改的覆盖先改的，记下最后修改人和时间
-      it.manual = {
-        gsb,
-        pref: 'gsb' in m ? gsbPref(gsb) : 'pref' in m ? (['A', 'B', 'C', 'D', 'same'].includes(m.pref) ? m.pref : null) : it.manual?.pref ?? null,
-        rating: 'rating' in m ? (['good', 'ok', 'bad'].includes(m.rating) ? m.rating : null) : it.manual?.rating ?? null,
-        note: 'note' in m ? String(m.note ?? '') : it.manual?.note ?? '',
-        by: user,
-        at: new Date().toISOString(),
-      };
+      // 多人分别标注：按标注人分开存，分数取平均作为汇总；同一个人多次修改覆盖自己的那份
+      const gsbIn = 'gsb' in m;
+      const gsb = gsbIn ? (GSB.includes(Number(m.gsb)) && m.gsb !== null && m.gsb !== '' ? Number(m.gsb) : null) : undefined;
+      store.setManual(it, user, {
+        ...(gsbIn ? { gsb } : {}),
+        ...('rating' in m ? { rating: ['good', 'ok', 'bad'].includes(m.rating) ? m.rating : null } : {}),
+        ...('pref' in m && !gsbIn ? { gsb: m.pref === 'same' ? 0 : m.pref === 'A' ? -1 : m.pref === 'B' ? 1 : null } : {}),
+        ...('note' in m ? { note: String(m.note ?? '') } : {}),
+      });
       b.summary = null;
     }
     store.upd(it);
     store.save(b);
-    return { ok: true, manual: it.manual };
+    return { ok: true, manual: it.manual, manuals: it.manuals };
   }],
   // 轻量同步：只返回 since 之后改过的人工标注，协作时每几秒拉一次，不用整批重新下载
   // 增量刷新：只返回 since 之后变过的条目 + 批次级状态，页面不用每次重下整批
@@ -346,7 +344,7 @@ const routes = [
   ['GET', '/api/batches/:id/manual', ({ id, query }) => {
     const b = mustBatch(id);
     const since = query.get('since') || '';
-    return { now: new Date().toISOString(), items: b.items.filter((i) => i.manual?.at && i.manual.at > since).map((i) => ({ id: i.id, manual: i.manual })) };
+    return { now: new Date().toISOString(), items: b.items.filter((i) => i.manual?.at && i.manual.at > since).map((i) => ({ id: i.id, manual: i.manual, manuals: i.manuals || {} })) };
   }],
   ['GET', '/api/share', () => shareView()],
   ['POST', '/api/share', async ({ body }) => {

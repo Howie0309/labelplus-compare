@@ -118,6 +118,17 @@ function modelScore(it, k) {
   return j >= 0 ? ev.scores[L[j]] ?? null : null;
 }
 // 模型给的五档 GSB（B 相对 A）；只有评估时正好是批次的 A、B 两个环境才有意义
+// 我自己在这条上的标注（多人协作时每人一份）；没有则回退到汇总
+const myName = () => S.me || (S.role === 'owner' ? '发起人' : '我'); // 与服务端默认标注人一致
+const myMark = (it) => it.manuals?.[myName()] || (it.manuals ? {} : it.manual) || {};
+const othersMarks = (it) => Object.entries(it.manuals || {}).filter(([k]) => k !== myName());
+const annotators = (it) => Object.keys(it.manuals || {});
+const diverge = (it) => {
+  const gs = annotators(it).map((k) => it.manuals[k]?.gsb).filter((g) => typeof g === 'number');
+  return gs.length > 1 && Math.max(...gs) - Math.min(...gs) >= 0.5;
+};
+const markText = (m) => (typeof m?.gsb === 'number' ? gsbShort(m.gsb) : m?.note ? '仅备注' : '未标');
+
 function modelGsb(it) {
   const ev = it.eval;
   if (ev?.status !== 'done' || typeof ev.gsb !== 'number') return null;
@@ -488,6 +499,7 @@ async function syncManual() {
           const it = b.items.find((i) => i.id === x.id);
           if (!it || JSON.stringify(it.manual) === JSON.stringify(x.manual)) continue;
           it.manual = x.manual;
+          it.manuals = x.manuals || it.manuals;
           changed = true;
         }
         if (changed) {
@@ -537,8 +549,9 @@ function filterDefs() {
   const defs = { ...FILTERS };
   if (S.share.enabled || S.role === 'guest' || S.cur.items.some((i) => i.manual?.by)) {
     const marked = (i) => i.manual?.gsb != null || i.manual?.rating || i.manual?.note;
-    defs['by:me'] = ['我标注的', (i) => marked(i) && i.manual.by === S.me];
-    defs['by:other'] = ['别人标注的', (i) => marked(i) && i.manual.by && i.manual.by !== S.me];
+    defs['by:me'] = ['我标注的', (i) => annotators(i).includes(myName())];
+    defs['by:other'] = ['别人也标注的', (i) => othersMarks(i).length > 0];
+    defs.diverge = ['多人标注有分歧', (i) => diverge(i)];
   }
   if (multi()) {
     for (const p of [...L.slice(0, S.cur.envs.length), 'same']) {
@@ -910,7 +923,11 @@ function cardHtml(it) {
         ${modelGsb(it) !== null ? `<span class="tag">模型 ${gsbTag(modelGsb(it))}</span>` : mp ? `<span class="tag">模型 ${prefLabel(mp)}</span>` : ''}
         ${scores.length ? `<span class="score">${scores.join(' : ')}</span>` : ''}
         ${envs.length > 1 ? envs.map((e, k) => { const x = it.envEvals?.[e.id]; return x?.status === 'done' && typeof x.score === 'number' ? `<span class="tag" title="单环境评估">单评 ${L[k]} <b class="score">${x.score}</b></span>` : x?.status === 'failed' ? `<span class="tag err">单评 ${L[k]} 失败</span>` : ['queued', 'running'].includes(x?.status) ? `<span class="tag">单评 ${L[k]}…</span>` : ''; }).join('') : ''}
-        ${typeof it.manual?.gsb === 'number' ? `<span class="tag">人工 ${gsbTag(it.manual.gsb)}</span>` : it.manual?.pref ? `<span class="tag">人工 ${prefLabel(it.manual.pref)}</span>` : ''}
+        ${(() => {
+          const mineM = myMark(it), n = annotators(it).length;
+          const val = typeof mineM?.gsb === 'number' ? gsbTag(mineM.gsb) : mineM?.rating ? RT[mineM.rating] : '';
+          return val || n ? `<span class="tag" title="${annotators(it).map((k) => `${k} ${markText(it.manuals[k])}`).join(' / ')}">人工 ${val}${n > 1 ? `（${n} 人，均 ${fmtG(it.manual?.gsb ?? 0)}）` : ''}${diverge(it) ? ' <span class="warn" title="多人标注有分歧">●</span>' : ''}</span>` : '';
+        })()}
         ${it.manual?.rating ? `<span class="tag">人工：${RT[it.manual.rating]}</span>` : ''}
       </div>
       ${it.error ? `<div class="hint ${it.status === 'failed' ? 'err' : 'warn'}" style="margin-top:4px">${esc(it.error)}</div>` : ''}
@@ -1102,11 +1119,15 @@ document.addEventListener('keydown', (e) => {
 async function setManual(k, v) {
   const it = curItem();
   if (!it) return;
-  const val = it.manual?.[k] === v ? null : v;
-  it.manual = { ...(it.manual || {}), [k]: val, ...(k === 'gsb' ? { pref: val == null ? null : val > 0 ? 'B' : val < 0 ? 'A' : 'same' } : {}), by: S.me || it.manual?.by, at: new Date().toISOString() };
+  const mineM = myMark(it);
+  const val = mineM?.[k] === v ? null : v;
+  it.manuals ??= {};
+  it.manuals[myName()] = { ...(it.manuals[myName()] || {}), [k]: val, at: new Date().toISOString() };
   renderViewer(false);
   const r = await api('PATCH', `/api/batches/${bid()}/items/${it.id}`, { manual: { [k]: val } }).catch((e) => toast(e.message, true));
-  if (r?.manual) it.manual = r.manual; // 以服务端记录（含修改人、时间）为准
+  // 以服务端返回的「我的标注 + 汇总」为准
+  if (r?.manuals) it.manuals = r.manuals;
+  if (r?.manual) it.manual = r.manual;
 }
 // 评估进行中显示已等待时长；完成后显示耗时（模型要读图并写较长的理由，单条通常 30–90 秒）
 const waitText = (e) => e.status === 'queued' ? '评估排队中…' : `评估中… 已 ${e.startedAt ? Math.max(0, Math.round((Date.now() - new Date(e.startedAt)) / 1000)) : '?'} 秒（读图并写理由，通常 30–90 秒）`;
@@ -1147,7 +1168,7 @@ function renderViewer(force) {
       ${showLead ? md(lead) : ''}
       ${detail && s.status !== 'running' ? `<details data-sd="${e.id}" ${S.viewer.sd?.has(String(e.id)) ? 'open' : ''}><summary>${showLead ? '问题与维度明细' : '查看单评详情'}</summary>${md(detail)}</details>` : ''}</div>`;
   }).join('') : '';
-  const m = it.manual || {};
+  const m = myMark(it);
   const SUB = { '-1': '明显', '-0.5': '略好', 0: '持平', 0.5: '略好', 1: '明显' };
   const manual = multi()
     ? `<div class="gsb-ends"><span class="a">← A ${esc(envs[0]?.name)} 更好</span><span class="b">B ${esc(envs[1]?.name)} 更好 →</span></div>
@@ -1171,7 +1192,9 @@ function renderViewer(force) {
 
     <h4 style="margin:16px 0 6px">人工${multi() ? '偏好' : '评级'} <span class="hint" style="font-weight:400">快捷键 ${multi() ? '1–5' : '1–3'}</span></h4>
     ${manual}
-    ${m.by && m.at ? `<p class="hint" style="margin:4px 0 0">最后由 <b>${esc(m.by)}</b>${m.by === S.me ? '（我）' : ''} 修改于 ${new Date(m.at).toLocaleString('zh-CN')}${m.by !== S.me ? '，再标会覆盖' : ''}</p>` : ''}
+    ${m.at ? `<p class="hint" style="margin:4px 0 0">我的标注${m.by && m.by !== S.me ? `（记在 ${esc(m.by)} 名下）` : ''} · ${new Date(m.at).toLocaleString('zh-CN')} 修改</p>` : ''}
+    ${othersMarks(it).length ? `<details style="margin-top:4px"><summary class="hint">其他人也标了（${othersMarks(it).length} 人）${diverge(it) ? ' · <span class="warn">有分歧</span>' : ''}</summary>
+      <ul class="ctx">${othersMarks(it).map(([k, x]) => `<li><b>${esc(k)}</b>：${esc(markText(x))}${x.note ? `，备注：${esc(x.note)}` : ''}</li>`).join('')}</ul></details>` : ''}
     ${(S.share.online || []).filter((p) => p.name !== S.me && p.itemId === it.id).map((p) => `<p class="hint warn" style="margin:2px 0 0">${esc(p.name)} 也正在看这一条</p>`).join('')}
     <label class="f" for="vNote">备注</label>
     <textarea id="vNote" rows="3" placeholder="记录亮点、问题，失焦自动保存">${esc(m.note || '')}</textarea>
