@@ -503,6 +503,17 @@ const server = http.createServer(handler('owner')).listen(PORT, HOST, () => cons
 const applyShare = () => share.bindLan(!!loadConfig().share?.enabled, PORT, handler('guest'));
 applyShare().then((ips) => ips.length && console.log(`局域网协作已开启：${ips.join('、')}`));
 
+// 换了网络（比如从有线切到 Wi-Fi）后地址会变：每 30 秒检查一次，自动在新地址上重新监听，分享链接随之更新
+setInterval(async () => {
+  if (!loadConfig().share?.enabled) return;
+  const want = share.lanAddresses().sort().join(',');
+  const bound = share.urls(PORT, '').map((u) => new URL(u).hostname).sort().join(',');
+  if (want && want !== bound) {
+    const ips = await applyShare();
+    console.log(`网络地址变化，局域网协作已重新监听：${ips.join('、')}`);
+  }
+}, 30000).unref();
+
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, async () => {
   server.close();
   await share.closeAll();

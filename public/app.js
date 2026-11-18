@@ -281,6 +281,7 @@ function renderShare(v) {
     ? `${v.urls.map((u) => `<div class="row" style="margin-top:4px"><code style="word-break:break-all">${esc(u)}</code><button type="button" class="sm" data-copy="${esc(u)}">复制链接</button></div>`).join('')}
        <div style="margin-top:4px">在线：${(v.online || []).map((p) => esc(p.name)).join('、') || '暂无'}</div>`
     : '未开启。';
+  if (v.enabled) $('shBox').innerHTML += '<div style="margin-top:4px">换了网络后地址会变，请重新复制上面的链接发给同事（旧链接会失效）。</div>';
   $('shBox').querySelectorAll('[data-copy]').forEach((b) => (b.onclick = () => navigator.clipboard?.writeText(b.dataset.copy).then(() => toast('分享链接已复制，发给同事即可'), () => toast('复制失败，请手动选中复制', true))));
 }
 async function setShare(body) {
