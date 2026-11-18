@@ -493,7 +493,10 @@ async function mergeBatch(id) {
   S.sinced = u.now;
   if (u.items.length) {
     const map = new Map(u.items.map((i) => [i.id, i]));
+    const have = new Set(S.cur.items.map((i) => i.id));
     S.cur.items = S.cur.items.map((i) => map.get(i.id) || i);
+    // 增量里可能有页面加载之后才新拉的对话（新条目），要补进列表，否则一直显示「还没有条目」
+    for (const it of u.items) if (!have.has(it.id)) S.cur.items.push(it);
   }
   Object.assign(S.cur, { counts: u.counts, enum: u.enum, summary: u.summary, evalPending: u.evalPending, capturePending: u.capturePending });
 }
